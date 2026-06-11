@@ -209,6 +209,7 @@ type Config struct {
 	Port         string
 	MaxRetries   int
 	CooldownSec  int
+	ProxyKey     string
 }
 
 func parseKeysFromEnv() ([]string, error) {
@@ -239,6 +240,7 @@ func buildConfig() (Config, *KeyPool, error) {
 		Port:        getenv("PORT", "3000"),
 		MaxRetries:  10,
 		CooldownSec: 60,
+		ProxyKey:    getenv("PROXY_KEY", ""),
 	}
 	return cfg, NewKeyPool(keys), nil
 }
@@ -252,7 +254,7 @@ func loadConfig() (Config, *KeyPool) {
 }
 
 func reloadConfig() (Config, *KeyPool, error) {
-	for _, k := range []string{"API_KEYS", "TARGET_BASE_URL", "GENAI_BASE_URL", "PORT", "COOLDOWN_SEC"} {
+	for _, k := range []string{"API_KEYS", "TARGET_BASE_URL", "GENAI_BASE_URL", "PORT", "COOLDOWN_SEC", "PROXY_KEY"} {
 		os.Unsetenv(k)
 	}
 	loadDotEnv(".env")
@@ -288,17 +290,51 @@ func newServerState(cfg Config, pool *KeyPool) *ServerState {
 	return s
 }
 
-func (s *ServerState) swHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+func (s *ServerState) isAuthorized(r *http.Request) bool {
+	s.mu.RLock()
+	proxyKey := s.cfg.ProxyKey
+	s.mu.RUnlock()
+
+	if proxyKey == "" {
+		return true
+	}
+
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return false
+	}
+
+	const prefix = "Bearer "
+	if strings.HasPrefix(auth, prefix) {
+		token := strings.TrimSpace(auth[len(prefix):])
+		return token == proxyKey
+	}
+	return strings.TrimSpace(auth) == proxyKey
 }
 
 type ConfigPayload struct {
-	TargetBase string   `json:"targetBase"`
-	GenaiBase  string   `json:"genaiBase"`
-	Keys       []string `json:"keys"`
+	TargetBase      string   `json:"targetBase"`
+	GenaiBase       string   `json:"genaiBase"`
+	Keys            []string `json:"keys"`
+	CurrentProxyKey string   `json:"currentProxyKey"`
+	NewProxyKey     string   `json:"newProxyKey"`
+	ChangeProxyKey  bool     `json:"changeProxyKey"`
+}
+
+type ConfigResponse struct {
+	TargetBase  string   `json:"targetBase"`
+	GenaiBase   string   `json:"genaiBase"`
+	Keys        []string `json:"keys"`
+	HasProxyKey bool     `json:"hasProxyKey"`
 }
 
 func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.isAuthorized(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Alvus"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	s.mu.RLock()
 	cfg := s.cfg
 	keys := s.pool.keys
@@ -310,10 +346,11 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 		for i, k := range keys {
 			maskedKeys[i] = maskKey(k)
 		}
-		json.NewEncoder(w).Encode(ConfigPayload{
-			TargetBase: cfg.TargetBase,
-			GenaiBase: cfg.GenaiBase,
-			Keys: maskedKeys,
+		json.NewEncoder(w).Encode(ConfigResponse{
+			TargetBase:  cfg.TargetBase,
+			GenaiBase:   cfg.GenaiBase,
+			Keys:        maskedKeys,
+			HasProxyKey: cfg.ProxyKey != "",
 		})
 		return
 	}
@@ -331,6 +368,15 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		currentKeys := s.pool.keys
 		s.mu.RUnlock()
+
+		nextProxyKey := cfg.ProxyKey
+		if payload.ChangeProxyKey {
+			if cfg.ProxyKey != "" && payload.CurrentProxyKey != cfg.ProxyKey {
+				http.Error(w, "invalid current proxy key", http.StatusUnauthorized)
+				return
+			}
+			nextProxyKey = strings.TrimSpace(payload.NewProxyKey)
+		}
 
 		reclaimed := make(map[int]bool)
 		for i := range payload.Keys {
@@ -371,6 +417,7 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("API_KEYS=%s", strings.Join(payload.Keys, ",")),
 			fmt.Sprintf("PORT=%s", cfg.Port),
 			fmt.Sprintf("COOLDOWN_SEC=%d", cfg.CooldownSec),
+			fmt.Sprintf("PROXY_KEY=%s", nextProxyKey),
 		}
 
 		if err := os.WriteFile(".env", []byte(strings.Join(envLines, "\n")), 0600); err != nil {
@@ -413,6 +460,12 @@ func filterEmpty(ss []string) []string {
 }
 
 func (s *ServerState) healthHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.isAuthorized(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Alvus"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	s.mu.RLock()
 	pool := s.pool
 	s.mu.RUnlock()
@@ -429,6 +482,12 @@ func (s *ServerState) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.isAuthorized(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Alvus"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	s.mu.RLock()
 	cfg := s.cfg
 	pool := s.pool
@@ -595,6 +654,11 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ServerState) logsHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.isAuthorized(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	usageMu.Lock()
 	masked := make([]LogEntry, len(usageLogs))
@@ -938,6 +1002,76 @@ const dashboardHTML = `<!DOCTYPE html>
             margin-top: 3rem;
         }
 
+        /* --- Login Overlay --- */
+        .login-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(10, 10, 12, 0.85);
+            backdrop-filter: blur(16px);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .login-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .login-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 2.5rem;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            backdrop-filter: blur(var(--card-blur));
+        }
+
+        .login-title {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: 0.5px;
+        }
+
+        .login-subtitle {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            margin-bottom: 2rem;
+        }
+
+        .login-hint {
+            margin-top: 1.5rem;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            line-height: 1.4;
+        }
+
+        .login-hint code {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 0.1rem 0.3rem;
+            border-radius: 4px;
+            font-family: monospace;
+            color: var(--accent-primary);
+        }
+
+        .login-error {
+            color: var(--status-disabled);
+            font-size: 0.85rem;
+            margin-top: 0.75rem;
+            display: none;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             header { flex-direction: column; gap: 1.5rem; align-items: flex-start; }
@@ -1016,6 +1150,24 @@ const dashboardHTML = `<!DOCTYPE html>
                         <button type="button" id="addKeyBtn" class="btn btn-outline" style="margin-top: 10px; width: 100%;">+ Add Another Key</button>
                     </div>
 
+                    <div style="margin-top: 2rem; border-top: 1px solid var(--glass-border); padding-top: 1.5rem;">
+                        <h3 style="font-size: 1.1rem; color: white; margin-bottom: 1.2rem;">Authorization Settings</h3>
+                        <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem;">
+                            <input type="checkbox" id="changeProxyKey" name="changeProxyKey" style="width: auto; margin-right: 0.25rem; transform: scale(1.1); cursor: pointer;">
+                            <label for="changeProxyKey" style="display: inline; margin-bottom: 0; cursor: pointer; user-select: none;">Change Proxy Access Key</label>
+                        </div>
+                        <div id="proxyKeyChangeSection" style="display: none; animation: fadeIn 0.2s ease-out;">
+                            <div class="form-group" id="currentProxyKeyGroup">
+                                <label for="currentProxyKey">Current Proxy Key</label>
+                                <input type="password" id="currentProxyKey" name="currentProxyKey" placeholder="Leave empty if none was set" style="width: 100%; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); border-radius: 8px; padding: 0.75rem; color: white; font-size: 0.95rem; outline: none; transition: border-color 0.2s;">
+                            </div>
+                            <div class="form-group">
+                                <label for="newProxyKey">New Proxy Key</label>
+                                <input type="password" id="newProxyKey" name="newProxyKey" placeholder="Enter new proxy key (leave empty to disable authorization)" style="width: 100%; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); border-radius: 8px; padding: 0.75rem; color: white; font-size: 0.95rem; outline: none; transition: border-color 0.2s;">
+                            </div>
+                        </div>
+                    </div>
+
                     <div style="margin-top: 2rem;">
                         <button type="submit" class="btn" style="width: 100%;">Save & Apply Configuration</button>
                     </div>
@@ -1024,11 +1176,77 @@ const dashboardHTML = `<!DOCTYPE html>
         </main>
     </div>
 
+    <!-- Login Overlay -->
+    <div id="loginOverlay" class="login-overlay">
+        <div class="login-card">
+            <div class="login-title">ALVUS AUTHENTICATION</div>
+            <div class="login-subtitle">Enter your proxy key to access the dashboard</div>
+            <form id="loginForm">
+                <div class="form-group" style="text-align: left; margin-bottom: 1.5rem;">
+                    <label for="loginKey">Proxy Key</label>
+                    <input type="password" id="loginKey" placeholder="Enter proxy key..." required style="width: 100%; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); border-radius: 8px; padding: 0.75rem; color: white; font-size: 0.95rem; outline: none; transition: border-color 0.2s;">
+                    <div id="loginError" class="login-error">Invalid proxy key. Please try again.</div>
+                </div>
+                <button type="submit" class="btn" style="width: 100%;">Authenticate</button>
+            </form>
+            <div class="login-hint">
+                💡 Forgot your key? Look for <code>PROXY_KEY</code> in your <code>.env</code> file.
+            </div>
+        </div>
+    </div>
+
     <footer>
         &copy; 2026 Alvus Multi-Key Proxy
     </footer>
 
     <script>
+        // --- Auth Wrapper ---
+        function fetchWithAuth(url, options) {
+            options = options || {};
+            options.headers = options.headers || {};
+            const key = localStorage.getItem('alvus_proxy_key');
+            if (key) {
+                options.headers['Authorization'] = 'Bearer ' + key;
+            }
+            return fetch(url, options).then(res => {
+                if (res.status === 401) {
+                    showLoginOverlay();
+                    throw new Error('Unauthorized');
+                }
+                return res;
+            });
+        }
+
+        function showLoginOverlay() {
+            document.getElementById('loginOverlay').classList.add('active');
+            const existingKey = localStorage.getItem('alvus_proxy_key');
+            if (existingKey) {
+                document.getElementById('loginError').style.display = 'block';
+            } else {
+                document.getElementById('loginError').style.display = 'none';
+            }
+        }
+
+        function hideLoginOverlay() {
+            document.getElementById('loginOverlay').classList.remove('active');
+        }
+
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const key = document.getElementById('loginKey').value;
+            localStorage.setItem('alvus_proxy_key', key);
+            hideLoginOverlay();
+            
+            // Reload whatever active view is current
+            if (document.getElementById('overview').classList.contains('active')) {
+                updateStatus();
+            } else if (document.getElementById('logs').classList.contains('active')) {
+                updateLogs();
+            } else if (document.getElementById('settings').classList.contains('active')) {
+                loadConfig();
+            }
+        });
+
         // --- Navigation ---
         const navBtns = document.querySelectorAll('.nav-btn');
         const panels = document.querySelectorAll('.panel');
@@ -1051,7 +1269,7 @@ const dashboardHTML = `<!DOCTYPE html>
         function updateStatus() {
             if (!document.getElementById('overview').classList.contains('active')) return;
 
-            fetch('/health')
+            fetchWithAuth('/health')
                 .then(res => res.json())
                 .then(data => {
                     const grid = document.getElementById('statusGrid');
@@ -1066,13 +1284,13 @@ const dashboardHTML = `<!DOCTYPE html>
                         card.innerHTML = '<div class="key-header"><span class="badge badge-' + statusClass + '">' + key.status + '</span><span style="font-size: 0.75rem; color: var(--text-dim)">#' + (key.index + 1) + '</span></div><div class="key-val">' + key.key + '</div><div class="stat-row"><span>RPM</span><span class="stat-val">' + key.requests_per_minute + '</span></div><div class="stat-row"><span>Cooldown Until</span><span class="stat-val">' + (key.cooldown_until !== '0001-01-01T00:00:00Z' ? new Date(key.cooldown_until).toLocaleTimeString() : 'N/A') + '</span></div><div class="stat-row"><span>Last Used</span><span class="stat-val">' + (key.last_used !== '0001-01-01T00:00:00Z' ? new Date(key.last_used).toLocaleTimeString() : 'Never') + '</span></div>';
                         grid.appendChild(card);
                     });
-                });
+                }).catch(err => {});
         }
 
         function updateLogs() {
             if (!document.getElementById('logs').classList.contains('active')) return;
 
-            fetch('/logs')
+            fetchWithAuth('/logs')
                 .then(res => res.json())
                 .then(data => {
                     const tbody = document.querySelector('#logTable tbody');
@@ -1084,15 +1302,18 @@ const dashboardHTML = `<!DOCTYPE html>
 
                         const tr = document.createElement('tr');
                         const statusClass = log.status < 400 ? 'ok' : 'err';
-                        const shortKey = log.key.substring(0, 8) + '...';
                         
                         tr.innerHTML = '<td style="color: var(--text-dim); font-size: 0.8rem;">' + new Date(log.timestamp).toLocaleTimeString() + '</td><td><span style="font-weight: 700; color: var(--accent-primary)">' + log.method + '</span></td><td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + log.url + '</td><td><span class="status-tag ' + statusClass + '">' + log.status + '</span></td><td class="key-val">Key #' + log.key_index + '</td><td style="color: var(--text-dim)">' + (log.request_body_size / 1024).toFixed(1) + ' KB</td>';
                         tbody.appendChild(tr);
                     });
-                });
+                }).catch(err => {});
         }
 
         // --- Settings Management ---
+        document.getElementById('changeProxyKey').addEventListener('change', function(e) {
+            document.getElementById('proxyKeyChangeSection').style.display = e.target.checked ? 'block' : 'none';
+        });
+
         function addKeyInput(val) {
             val = val || '';
             const container = document.getElementById('keyInputsContainer');
@@ -1111,12 +1332,23 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         function loadConfig() {
-            fetch('/api/config')
+            fetchWithAuth('/api/config')
                 .then(function(res) { return res.json(); })
                 .then(function(data) {
                     document.getElementById('targetBase').value = data.targetBase;
                     document.getElementById('genaiBase').value = data.genaiBase;
                     
+                    if (data.hasProxyKey) {
+                        document.getElementById('currentProxyKeyGroup').style.display = 'block';
+                    } else {
+                        document.getElementById('currentProxyKeyGroup').style.display = 'none';
+                    }
+                    
+                    document.getElementById('changeProxyKey').checked = false;
+                    document.getElementById('proxyKeyChangeSection').style.display = 'none';
+                    document.getElementById('currentProxyKey').value = '';
+                    document.getElementById('newProxyKey').value = '';
+
                     const container = document.getElementById('keyInputsContainer');
                     container.innerHTML = '';
                     if (data.keys && data.keys.length > 0) {
@@ -1124,7 +1356,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     } else {
                         addKeyInput();
                     }
-                });
+                }).catch(err => {});
         }
 
         document.getElementById('addKeyBtn').addEventListener('click', function() { addKeyInput(); });
@@ -1133,24 +1365,43 @@ const dashboardHTML = `<!DOCTYPE html>
             e.preventDefault();
             const formData = new FormData(e.target);
             const keys = formData.getAll('apiKeys[]');
+            const changeKey = document.getElementById('changeProxyKey').checked;
+            const newKey = document.getElementById('newProxyKey').value;
             const config = {
                 targetBase: formData.get('targetBase'),
                 genaiBase: formData.get('genaiBase'),
-                keys: keys.filter(function(k) { return k.trim() !== ''; })
+                keys: keys.filter(function(k) { return k.trim() !== ''; }),
+                changeProxyKey: changeKey,
+                currentProxyKey: document.getElementById('currentProxyKey').value,
+                newProxyKey: newKey
             };
 
-            fetch('/api/config', {
+            fetchWithAuth('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(config)
             }).then(function(res) {
-                if(res.ok) alert('Configuration saved! The server will reload automatically in a few seconds.');
-                else alert('Failed to save configuration.');
-            });
+                if(res.ok) {
+                    alert('Configuration saved! The server will reload automatically in a few seconds.');
+                    if (changeKey) {
+                        if (newKey.trim() === '') {
+                            localStorage.removeItem('alvus_proxy_key');
+                        } else {
+                            localStorage.setItem('alvus_proxy_key', newKey);
+                        }
+                    }
+                    setTimeout(loadConfig, 1000);
+                }
+                else {
+                    res.text().then(function(text) {
+                        alert('Failed to save configuration: ' + text);
+                    });
+                }
+            }).catch(err => {});
         });
 
         document.getElementById('clearLogsBtn').addEventListener('click', function() {
-            fetch('/clear', { method: 'POST' }).then(function() { updateLogs(); });
+            fetchWithAuth('/clear', { method: 'POST' }).then(function() { updateLogs(); }).catch(err => {});
         });
 
         // Polling
@@ -1165,6 +1416,11 @@ const dashboardHTML = `<!DOCTYPE html>
 `
 
 func (s *ServerState) clearHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.isAuthorized(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
