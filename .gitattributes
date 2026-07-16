@@ -1,0 +1,7 @@
+# Go tooling (gofmt) requires LF; core.autocrlf must not win here.
+*.go text eol=lf
+*.html text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+.env.example text eol=lf
+LICENSE text eol=lf

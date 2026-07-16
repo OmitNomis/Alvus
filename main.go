@@ -27,13 +27,13 @@ func maskKey(key string) string {
 }
 
 type LogEntry struct {
-	Timestamp string `json:"timestamp"`
-	Key string `json:"key"`
-	KeyIndex int `json:"key_index"`
-	Method string `json:"method"`
-	URL string `json:"url"`
-	Status int `json:"status"`
-	RequestBodySize int `json:"request_body_size"`
+	Timestamp       string `json:"timestamp"`
+	Key             string `json:"key"`
+	KeyIndex        int    `json:"key_index"`
+	Method          string `json:"method"`
+	URL             string `json:"url"`
+	Status          int    `json:"status"`
+	RequestBodySize int    `json:"request_body_size"`
 }
 
 var (
@@ -179,12 +179,12 @@ func (p *KeyPool) GetKeyDetails() []map[string]interface{} {
 	for i := range p.keys {
 		p.cleanupOldRequests(i)
 		keyDetail := map[string]interface{}{
-			"index": i,
-			"key": maskKey(p.keys[i]),
-			"disabled": p.disabled[i],
+			"index":               i,
+			"key":                 maskKey(p.keys[i]),
+			"disabled":            p.disabled[i],
 			"requests_per_minute": p.requestsInLastMinute(i),
-			"last_used": p.lastUsed[i].Format(time.RFC3339),
-			"cooldown_until": p.cooldowns[i].Format(time.RFC3339),
+			"last_used":           p.lastUsed[i].Format(time.RFC3339),
+			"cooldown_until":      p.cooldowns[i].Format(time.RFC3339),
 		}
 		keyDetail["status"] = p.keyStatusLabel(i, now)
 		details[i] = keyDetail
@@ -326,8 +326,8 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(ConfigPayload{
 			TargetBase: cfg.TargetBase,
-			GenaiBase: cfg.GenaiBase,
-			Keys: maskedKeys,
+			GenaiBase:  cfg.GenaiBase,
+			Keys:       maskedKeys,
 		})
 		return
 	}
@@ -614,12 +614,12 @@ func (s *ServerState) logsHandler(w http.ResponseWriter, r *http.Request) {
 	masked := make([]LogEntry, len(usageLogs))
 	for i, entry := range usageLogs {
 		masked[i] = LogEntry{
-			Timestamp: entry.Timestamp,
-			Key: maskKey(entry.Key),
-			KeyIndex: entry.KeyIndex,
-			Method: entry.Method,
-			URL: entry.URL,
-			Status: entry.Status,
+			Timestamp:       entry.Timestamp,
+			Key:             maskKey(entry.Key),
+			KeyIndex:        entry.KeyIndex,
+			Method:          entry.Method,
+			URL:             entry.URL,
+			Status:          entry.Status,
 			RequestBodySize: entry.RequestBodySize,
 		}
 	}
