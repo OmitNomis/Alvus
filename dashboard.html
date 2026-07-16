@@ -187,6 +187,20 @@
 
         .stat-val { color: white; font-weight: 600; }
 
+        .key-index { font-size: 0.75rem; color: var(--text-dim); }
+
+        /* Replaces inline styles that previously lived in innerHTML strings. */
+        .col-time { color: var(--text-dim); font-size: 0.8rem; white-space: nowrap; }
+        .col-size { color: var(--text-dim); white-space: nowrap; }
+        .method { font-weight: 700; color: var(--accent-primary); }
+
+        .col-url {
+            max-width: 250px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         /* --- Table --- */
         .table-container {
             width: 100%;
@@ -426,6 +440,34 @@
             });
         });
 
+        // --- DOM helpers ---
+        // Everything rendered below is built with createElement/textContent
+        // rather than innerHTML. The proxied request URL is attacker-controlled
+        // (it is whatever path was sent to Alvus), so string-building HTML from
+        // it is a stored-XSS sink.
+        function el(tag, className, text) {
+            const n = document.createElement(tag);
+            if (className) n.className = className;
+            if (text !== undefined && text !== null) n.textContent = String(text);
+            return n;
+        }
+
+        function statRow(label, value) {
+            const row = el('div', 'stat-row');
+            row.appendChild(el('span', null, label));
+            row.appendChild(el('span', 'stat-val', value));
+            return row;
+        }
+
+        const ZERO_TIME = '0001-01-01T00:00:00Z';
+        function fmtTime(ts, fallback) {
+            return ts && ts !== ZERO_TIME ? new Date(ts).toLocaleTimeString() : fallback;
+        }
+
+        function clear(node) {
+            while (node.firstChild) node.removeChild(node.firstChild);
+        }
+
         // --- Data Fetching ---
         function updateStatus() {
             if (!document.getElementById('overview').classList.contains('active')) return;
@@ -434,15 +476,22 @@
                 .then(res => res.json())
                 .then(data => {
                     const grid = document.getElementById('statusGrid');
-                    grid.innerHTML = '';
-                    
+                    clear(grid);
+
                     data.details.forEach(key => {
-                        const card = document.createElement('div');
-                        card.className = "card key-card " + (key.status.startsWith('cooling') ? 'cooling' : key.status);
-                        
                         const statusClass = key.status === 'ready' ? 'ready' : (key.status === 'disabled' ? 'disabled' : 'cooling');
-                        
-                        card.innerHTML = '<div class="key-header"><span class="badge badge-' + statusClass + '">' + key.status + '</span><span style="font-size: 0.75rem; color: var(--text-dim)">#' + (key.index + 1) + '</span></div><div class="key-val">' + key.key + '</div><div class="stat-row"><span>RPM</span><span class="stat-val">' + key.requests_per_minute + '</span></div><div class="stat-row"><span>Cooldown Until</span><span class="stat-val">' + (key.cooldown_until !== '0001-01-01T00:00:00Z' ? new Date(key.cooldown_until).toLocaleTimeString() : 'N/A') + '</span></div><div class="stat-row"><span>Last Used</span><span class="stat-val">' + (key.last_used !== '0001-01-01T00:00:00Z' ? new Date(key.last_used).toLocaleTimeString() : 'Never') + '</span></div>';
+                        const card = el('div', 'card key-card ' + statusClass);
+
+                        const header = el('div', 'key-header');
+                        header.appendChild(el('span', 'badge badge-' + statusClass, key.status));
+                        header.appendChild(el('span', 'key-index', '#' + (key.index + 1)));
+                        card.appendChild(header);
+
+                        card.appendChild(el('div', 'key-val', key.key));
+                        card.appendChild(statRow('RPM', key.requests_per_minute));
+                        card.appendChild(statRow('Cooldown Until', fmtTime(key.cooldown_until, 'N/A')));
+                        card.appendChild(statRow('Last Used', fmtTime(key.last_used, 'Never')));
+
                         grid.appendChild(card);
                     });
                 });
@@ -456,16 +505,26 @@
                 .then(data => {
                     const tbody = document.querySelector('#logTable tbody');
                     const search = document.getElementById('logSearch').value.toLowerCase();
-                    tbody.innerHTML = '';
-                    
+                    clear(tbody);
+
                     data.slice().reverse().forEach(log => {
                         if (search && !JSON.stringify(log).toLowerCase().includes(search)) return;
 
-                        const tr = document.createElement('tr');
-                        const statusClass = log.status < 400 ? 'ok' : 'err';
-                        const shortKey = log.key.substring(0, 8) + '...';
-                        
-                        tr.innerHTML = '<td style="color: var(--text-dim); font-size: 0.8rem;">' + new Date(log.timestamp).toLocaleTimeString() + '</td><td><span style="font-weight: 700; color: var(--accent-primary)">' + log.method + '</span></td><td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + log.url + '</td><td><span class="status-tag ' + statusClass + '">' + log.status + '</span></td><td class="key-val">Key #' + log.key_index + '</td><td style="color: var(--text-dim)">' + (log.request_body_size / 1024).toFixed(1) + ' KB</td>';
+                        const tr = el('tr');
+                        tr.appendChild(el('td', 'col-time', fmtTime(log.timestamp, '—')));
+
+                        const method = el('td');
+                        method.appendChild(el('span', 'method', log.method));
+                        tr.appendChild(method);
+
+                        tr.appendChild(el('td', 'col-url', log.url));
+
+                        const status = el('td');
+                        status.appendChild(el('span', 'status-tag ' + (log.status < 400 ? 'ok' : 'err'), log.status));
+                        tr.appendChild(status);
+
+                        tr.appendChild(el('td', 'key-val', 'Key #' + log.key_index));
+                        tr.appendChild(el('td', 'col-size', (log.request_body_size / 1024).toFixed(1) + ' KB'));
                         tbody.appendChild(tr);
                     });
                 });
@@ -473,18 +532,29 @@
 
         // --- Settings Management ---
         function addKeyInput(val) {
-            val = val || '';
             const container = document.getElementById('keyInputsContainer');
-            const div = document.createElement('div');
-            div.className = 'key-list-item';
-            div.innerHTML = '<input type="text" name="apiKeys[]" value="' + val + '" placeholder="nvapi-..." required><button type="button" class="remove-key-btn">&times;</button>';
+            const div = el('div', 'key-list-item');
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.name = 'apiKeys[]';
+            input.placeholder = 'nvapi-...';
+            input.required = true;
+            input.value = val || '';
+
+            const remove = el('button', 'remove-key-btn', '×');
+            remove.type = 'button';
+            remove.title = 'Remove this key';
+
+            div.appendChild(input);
+            div.appendChild(remove);
             container.appendChild(div);
 
-            div.querySelector('.remove-key-btn').addEventListener('click', function() {
+            remove.addEventListener('click', function() {
                 if (container.children.length > 1) {
                     div.remove();
                 } else {
-                    div.querySelector('input').value = '';
+                    input.value = '';
                 }
             });
         }
@@ -497,7 +567,7 @@
                     document.getElementById('genaiBase').value = data.genaiBase;
                     
                     const container = document.getElementById('keyInputsContainer');
-                    container.innerHTML = '';
+                    clear(container);
                     if (data.keys && data.keys.length > 0) {
                         data.keys.forEach(function(k) { addKeyInput(k); });
                     } else {
@@ -529,7 +599,12 @@
         });
 
         document.getElementById('clearLogsBtn').addEventListener('click', function() {
-            fetch('/clear', { method: 'POST' }).then(function() { updateLogs(); });
+            // Content-Type must be JSON: the server rejects writes that could
+            // have originated from a cross-site <form> post.
+            fetch('/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }).then(function() { updateLogs(); });
         });
 
         // Polling

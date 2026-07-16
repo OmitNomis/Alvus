@@ -22,8 +22,10 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"log"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -115,6 +117,49 @@ func (s *ServerState) guard(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+// sameOrigin reports whether a state-changing request came from the dashboard
+// itself rather than some other page in the user's browser.
+//
+// Cookie auth alone is forgeable cross-site, and a plain <form> POST needs no
+// preflight — so without this, any site you visit could rewrite Alvus's config
+// (and therefore its upstream URL) using your cookie. Two independent checks:
+//
+//	Content-Type must be application/json — forms can only send text/plain,
+//	urlencoded or multipart, and a JSON body forces a CORS preflight the
+//	attacker's origin cannot pass.
+//
+//	Origin, when present, must match the Host we were reached on.
+//
+// Non-browser callers (curl, scripts) send no Origin and set the JSON type, so
+// they are unaffected.
+func sameOrigin(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	if mt, _, err := mime.ParseMediaType(ct); err != nil || mt != "application/json" {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // not a browser-initiated cross-site request
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return u.Host == r.Host
+}
+
+// guardWrite wraps a mutating admin handler with the token check plus the
+// cross-origin check.
+func (s *ServerState) guardWrite(h http.HandlerFunc) http.HandlerFunc {
+	return s.guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && !sameOrigin(r) {
+			http.Error(w, "alvus: cross-origin or non-JSON write rejected", http.StatusForbidden)
+			return
+		}
+		h(w, r)
+	})
 }
 
 // issueCookie mints the admin cookie after a successful ?token= handoff so the

@@ -297,8 +297,8 @@ func newServerState(cfg Config, pool *KeyPool, auth *AdminAuth) *ServerState {
 	// whenever the listener is reachable from off-box. See auth.go.
 	s.mux.HandleFunc("/logs", s.guard(s.logsHandler))
 	s.mux.HandleFunc("/dashboard", s.guard(s.dashboardHandler))
-	s.mux.HandleFunc("/clear", s.guard(s.clearHandler))
-	s.mux.HandleFunc("/api/config", s.guard(s.configHandler))
+	s.mux.HandleFunc("/clear", s.guardWrite(s.clearHandler))
+	s.mux.HandleFunc("/api/config", s.guardWrite(s.configHandler))
 	// Block service worker requests to prevent 404s and unnecessary upstream proxying
 	s.mux.HandleFunc("/sw.js", s.swHandler)
 	s.mux.HandleFunc("/", s.proxyHandler)
