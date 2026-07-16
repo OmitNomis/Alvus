@@ -14,6 +14,9 @@ import (
 var dashboardHTML string
 
 func (s *ServerState) dashboardHandler(w http.ResponseWriter, r *http.Request) {
+	// Trade a valid ?token= for a cookie so the page's own fetch() calls
+	// authenticate without threading the token through every URL.
+	s.issueCookie(w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(dashboardHTML))
 }

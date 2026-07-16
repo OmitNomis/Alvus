@@ -283,19 +283,22 @@ type ServerState struct {
 	mu   sync.RWMutex
 	cfg  Config
 	pool *KeyPool
+	auth *AdminAuth
 	mux  *http.ServeMux
 }
 
-func newServerState(cfg Config, pool *KeyPool) *ServerState {
-	s := &ServerState{cfg: cfg, pool: pool, mux: http.NewServeMux()}
+func newServerState(cfg Config, pool *KeyPool, auth *AdminAuth) *ServerState {
+	s := &ServerState{cfg: cfg, pool: pool, auth: auth, mux: http.NewServeMux()}
 	s.mux.HandleFunc("/health", s.healthHandler)
 	// Claude Code support: Anthropic Messages API translated to OpenAI upstream
 	s.mux.HandleFunc("/v1/messages", s.anthropicHandler)
 	s.mux.HandleFunc("/v1/messages/count_tokens", s.anthropicCountTokensHandler)
-	s.mux.HandleFunc("/logs", s.logsHandler)
-	s.mux.HandleFunc("/dashboard", s.dashboardHandler)
-	s.mux.HandleFunc("/clear", s.clearHandler)
-	s.mux.HandleFunc("/api/config", s.configHandler)
+	// Admin surface — exposes masked keys and rewrites config, so it is gated
+	// whenever the listener is reachable from off-box. See auth.go.
+	s.mux.HandleFunc("/logs", s.guard(s.logsHandler))
+	s.mux.HandleFunc("/dashboard", s.guard(s.dashboardHandler))
+	s.mux.HandleFunc("/clear", s.guard(s.clearHandler))
+	s.mux.HandleFunc("/api/config", s.guard(s.configHandler))
 	// Block service worker requests to prevent 404s and unnecessary upstream proxying
 	s.mux.HandleFunc("/sw.js", s.swHandler)
 	s.mux.HandleFunc("/", s.proxyHandler)
@@ -688,20 +691,25 @@ func watchEnvFile(state *ServerState, stop <-chan struct{}) {
 // ── Main ──────────────────────────────────────
 
 func main() {
-	isLocal := flag.Bool("local", false, "Bind to 127.0.0.1 (local access only)")
-	isNetwork := flag.Bool("network-only", false, "Bind to 0.0.0.0 (accessible via LAN)")
+	isLocal := flag.Bool("local", false, "Bind to 127.0.0.1 (default; kept for compatibility)")
+	isNetwork := flag.Bool("network-only", false, "Bind to 0.0.0.0 — reachable over the LAN (requires an admin token)")
 	flag.Parse()
 
-	host := "" // Default (binds to all interfaces)
+	// Loopback by default. Alvus holds live API keys and serves an admin
+	// surface that can rewrite the upstream URL, so exposing it to the network
+	// has to be a deliberate act rather than the default.
+	host := "127.0.0.1"
+	if *isNetwork {
+		host = "0.0.0.0"
+	}
 	if *isLocal {
 		host = "127.0.0.1"
-	} else if *isNetwork {
-		host = "0.0.0.0"
 	}
 
 	loadDotEnv(".env")
 	cfg, pool := loadConfig()
-	state := newServerState(cfg, pool)
+	auth := newAdminAuth(host, os.Getenv("ADMIN_TOKEN"))
+	state := newServerState(cfg, pool, auth)
 
 	stop := make(chan struct{})
 	go watchEnvFile(state, stop)
@@ -723,11 +731,10 @@ func main() {
 		}
 	}()
 
-	displayHost := host
-	if displayHost == "" {
-		displayHost = "0.0.0.0"
+	log.Printf("⚡ Alvus %s:%s → %s | genai → %s (%d keys)", host, cfg.Port, cfg.TargetBase, cfg.GenaiBase, len(pool.keys))
+	if isLoopbackHost(host) {
+		log.Printf("   Dashboard: http://127.0.0.1:%s/dashboard (loopback only — use --network-only for LAN)", cfg.Port)
 	}
-	log.Printf("⚡ Alvus %s:%s → %s | genai → %s (%d keys)", displayHost, cfg.Port, cfg.TargetBase, cfg.GenaiBase, len(pool.keys))
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("❌ Server error: %v", err)
 	}
