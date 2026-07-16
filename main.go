@@ -254,7 +254,7 @@ func loadConfig() (Config, *KeyPool) {
 }
 
 func reloadConfig() (Config, *KeyPool, error) {
-	for _, k := range []string{"API_KEYS", "TARGET_BASE_URL", "GENAI_BASE_URL", "PORT", "COOLDOWN_SEC", "OVERRIDE_MODEL"} {
+	for _, k := range envKeys {
 		os.Unsetenv(k)
 	}
 	loadDotEnv(".env")
@@ -382,15 +382,13 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		envLines := []string{
-			fmt.Sprintf("TARGET_BASE_URL=%s", payload.TargetBase),
-			fmt.Sprintf("GENAI_BASE_URL=%s", payload.GenaiBase),
-			fmt.Sprintf("API_KEYS=%s", strings.Join(payload.Keys, ",")),
-			fmt.Sprintf("PORT=%s", cfg.Port),
-			fmt.Sprintf("COOLDOWN_SEC=%d", cfg.CooldownSec),
-		}
-
-		if err := os.WriteFile(".env", []byte(strings.Join(envLines, "\n")), 0600); err != nil {
+		// Only touch what the form actually owns. Anything else in the file
+		// (OVERRIDE_MODEL, ADMIN_TOKEN, comments, custom vars) is preserved.
+		if err := updateDotEnv(".env", map[string]string{
+			"TARGET_BASE_URL": payload.TargetBase,
+			"GENAI_BASE_URL":  payload.GenaiBase,
+			"API_KEYS":        strings.Join(payload.Keys, ","),
+		}); err != nil {
 			log.Printf("❌ Failed to write .env: %v", err)
 			http.Error(w, "failed to save config", http.StatusInternalServerError)
 			return
@@ -737,28 +735,5 @@ func main() {
 	}
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("❌ Server error: %v", err)
-	}
-}
-
-// ── .env Loader ───────────────────────────────
-
-func loadDotEnv(filename string) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-		if os.Getenv(k) == "" {
-			os.Setenv(k, v)
-		}
 	}
 }
