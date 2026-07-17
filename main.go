@@ -36,10 +36,31 @@ type LogEntry struct {
 	RequestBodySize int    `json:"request_body_size"`
 }
 
+const maxUsageLogs = 1000
+
 var (
 	usageLogs = []LogEntry{}
 	usageMu   sync.Mutex
 )
+
+// logUsage records one completed upstream request for the dashboard's activity
+// feed, trimming the buffer to the most recent maxUsageLogs entries.
+func logUsage(key string, idx int, method, target string, status, bodySize int) {
+	usageMu.Lock()
+	defer usageMu.Unlock()
+	usageLogs = append(usageLogs, LogEntry{
+		Timestamp:       time.Now().Format(time.RFC3339),
+		Key:             key,
+		KeyIndex:        idx + 1,
+		Method:          method,
+		URL:             target,
+		Status:          status,
+		RequestBodySize: bodySize,
+	})
+	if len(usageLogs) > maxUsageLogs {
+		usageLogs = usageLogs[len(usageLogs)-maxUsageLogs:]
+	}
+}
 
 // ── Key Pool ──────────────────────────────────
 
@@ -487,19 +508,10 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("→ %s %s (%d bytes)", r.Method, target, len(bodyBytes))
 
-	for attempt := 0; attempt < cfg.MaxRetries; attempt++ {
-		idx, key, ok := pool.Next()
-		if !ok {
-			wait := pool.TimeUntilAvailable()
-			log.Printf("⏳ All keys cooling — waiting %s (attempt %d/%d)", wait.Round(time.Second), attempt+1, cfg.MaxRetries)
-			time.Sleep(wait + 500*time.Millisecond)
-			continue
-		}
-
+	out, rerr := withKeyRotation(r.Context(), cfg, pool, client, "", func(key string) (*http.Request, error) {
 		req, err := http.NewRequest(r.Method, target, bytes.NewReader(bodyBytes))
 		if err != nil {
-			http.Error(w, "proxy: failed to build upstream request", http.StatusInternalServerError)
-			return
+			return nil, err
 		}
 		for k, vals := range r.Header {
 			for _, v := range vals {
@@ -507,106 +519,46 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		req.Header.Set("Authorization", "Bearer "+key)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("⚠️ Key [%d] network error: %v", idx, err)
-			pool.Cooldown(idx, time.Duration(cfg.CooldownSec)*time.Second)
-			continue
-		}
-
-		switch resp.StatusCode {
-		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable:
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			cooldown := time.Duration(cfg.CooldownSec) * time.Second
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if secs, err := strconv.Atoi(ra); err == nil {
-					cooldown = time.Duration(secs+2) * time.Second
-				}
-			}
-			log.Printf("🚫 Key [%d] %d — cooldown %s | %s", idx, resp.StatusCode, cooldown, pool.Status())
-			log.Printf("   body: %s", body)
-			pool.Cooldown(idx, cooldown)
-			continue
-
-		case http.StatusUnauthorized, http.StatusForbidden:
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("🔑 Key [%d] %d — disabled. body: %s", idx, resp.StatusCode, body)
-			pool.Disable(idx)
-			if pool.ActiveCount() == 0 {
-				http.Error(w, "alvus: all keys are invalid or revoked", http.StatusServiceUnavailable)
-				return
-			}
-			continue
-		}
-
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			for k, vals := range resp.Header {
-				for _, v := range vals {
-					w.Header().Add(k, v)
-				}
-			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-			resp.Body.Close()
-
-			pool.IncrementRequestCount(idx)
-			usageMu.Lock()
-			usageLogs = append(usageLogs, LogEntry{Timestamp: time.Now().Format(time.RFC3339), Key: key, KeyIndex: idx + 1, Method: r.Method, URL: target, Status: resp.StatusCode, RequestBodySize: len(bodyBytes)})
-			if len(usageLogs) > 1000 {
-				usageLogs = usageLogs[1:]
-			}
-			usageMu.Unlock()
-			log.Printf("⚠️ %s %s → %d (Terminal Client Error, no retry)", r.Method, target, resp.StatusCode)
-			return
-		}
-
-		if resp.StatusCode >= 500 {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("⚠️ Upstream %d: %s (Retrying...)", resp.StatusCode, body)
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			continue
-		}
-
-		for k, vals := range resp.Header {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-
-		if f, ok := w.(http.Flusher); ok {
-			buf := make([]byte, 4096)
-			for {
-				n, rerr := resp.Body.Read(buf)
-				if n > 0 {
-					w.Write(buf[:n])
-					f.Flush()
-				}
-				if rerr != nil {
-					break
-				}
-			}
-		} else {
-			io.Copy(w, resp.Body)
-		}
-		resp.Body.Close()
-
-		pool.IncrementRequestCount(idx)
-		usageMu.Lock()
-		usageLogs = append(usageLogs, LogEntry{Timestamp: time.Now().Format(time.RFC3339), Key: key, KeyIndex: idx + 1, Method: r.Method, URL: target, Status: resp.StatusCode, RequestBodySize: len(bodyBytes)})
-		if len(usageLogs) > 1000 {
-			usageLogs = usageLogs[1:]
-		}
-		usageMu.Unlock()
-		log.Printf("✅ %s %s → %d (key[%d], attempt %d)", r.Method, target, resp.StatusCode, idx, attempt+1)
+		return req, nil
+	})
+	if rerr != nil {
+		http.Error(w, "alvus: "+rerr.msg, rerr.status)
 		return
 	}
+	defer out.resp.Body.Close()
 
-	http.Error(w, "alvus: exhausted all retries", http.StatusServiceUnavailable)
+	resp := out.resp
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	if f, ok := w.(http.Flusher); ok {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				w.Write(buf[:n])
+				f.Flush()
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	} else {
+		io.Copy(w, resp.Body)
+	}
+
+	pool.IncrementRequestCount(out.idx)
+	logUsage(out.key, out.idx, r.Method, target, resp.StatusCode, len(bodyBytes))
+
+	if resp.StatusCode >= 400 {
+		log.Printf("⚠️ %s %s → %d (Terminal Client Error, no retry)", r.Method, target, resp.StatusCode)
+		return
+	}
+	log.Printf("✅ %s %s → %d (key[%d], attempt %d)", r.Method, target, resp.StatusCode, out.idx, out.attempt)
 }
 
 func (s *ServerState) logsHandler(w http.ResponseWriter, r *http.Request) {

@@ -21,7 +21,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -602,107 +601,57 @@ func (s *ServerState) anthropicHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("→ [anthropic] %s model=%s stream=%v (%d→%d bytes)", target, model, stream, len(raw), len(oaiBody))
 
-	for attempt := 0; attempt < cfg.MaxRetries; attempt++ {
-		idx, key, ok := pool.Next()
-		if !ok {
-			wait := pool.TimeUntilAvailable()
-			log.Printf("⏳ [anthropic] All keys cooling — waiting %s (attempt %d/%d)", wait.Round(time.Second), attempt+1, cfg.MaxRetries)
-			time.Sleep(wait + 500*time.Millisecond)
-			continue
-		}
-
+	out, rerr := withKeyRotation(r.Context(), cfg, pool, client, "[anthropic] ", func(key string) (*http.Request, error) {
 		req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(oaiBody))
 		if err != nil {
-			anthErr(w, http.StatusInternalServerError, "api_error", "failed to build upstream request")
-			return
+			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+key)
 		if stream {
 			req.Header.Set("Accept", "text/event-stream")
 		}
+		return req, nil
+	})
+	if rerr != nil {
+		anthErr(w, rerr.status, "api_error", rerr.msg)
+		return
+	}
+	defer out.resp.Body.Close()
+	resp := out.resp
 
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("⚠️ [anthropic] Key [%d] network error: %v", idx, err)
-			pool.Cooldown(idx, time.Duration(cfg.CooldownSec)*time.Second)
-			continue
-		}
-
-		switch resp.StatusCode {
-		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable:
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			cooldown := time.Duration(cfg.CooldownSec) * time.Second
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if secs, err := strconv.Atoi(ra); err == nil {
-					cooldown = time.Duration(secs+2) * time.Second
-				}
-			}
-			log.Printf("🚫 [anthropic] Key [%d] %d — cooldown %s | %s", idx, resp.StatusCode, cooldown, pool.Status())
-			log.Printf("   body: %s", body)
-			pool.Cooldown(idx, cooldown)
-			continue
-
-		case http.StatusUnauthorized, http.StatusForbidden:
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("🔑 [anthropic] Key [%d] %d — disabled. body: %s", idx, resp.StatusCode, body)
-			pool.Disable(idx)
-			if pool.ActiveCount() == 0 {
-				anthErr(w, http.StatusServiceUnavailable, "api_error", "all keys are invalid or revoked")
-				return
-			}
-			continue
-		}
-
-		if resp.StatusCode >= 500 {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("⚠️ [anthropic] Upstream %d: %s (Retrying...)", resp.StatusCode, body)
-			continue
-		}
-
-		if resp.StatusCode >= 400 {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("⚠️ [anthropic] Upstream %d (terminal): %s", resp.StatusCode, body)
-			anthErr(w, resp.StatusCode, "invalid_request_error", strings.TrimSpace(string(body)))
-			return
-		}
-
-		// 2xx — translate and return.
-		pool.IncrementRequestCount(idx)
-		logUsage(key, idx, target, resp.StatusCode, len(raw))
-
-		if stream {
-			f, ok := w.(http.Flusher)
-			if !ok {
-				resp.Body.Close()
-				anthErr(w, http.StatusInternalServerError, "api_error", "streaming unsupported by server")
-				return
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			w.WriteHeader(http.StatusOK)
-			streamOpenAIToAnthropic(w, f, resp.Body, model)
-			resp.Body.Close()
-			log.Printf("✅ [anthropic] streamed (key[%d], attempt %d)", idx, attempt+1)
-			return
-		}
-
+	// Terminal 4xx: surface upstream's complaint in Anthropic's error shape.
+	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		out := translateOpenAIResponse(body, model)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(out)
-		log.Printf("✅ [anthropic] %d (key[%d], attempt %d)", resp.StatusCode, idx, attempt+1)
+		log.Printf("⚠️ [anthropic] Upstream %d (terminal): %s", resp.StatusCode, body)
+		anthErr(w, resp.StatusCode, "invalid_request_error", strings.TrimSpace(string(body)))
 		return
 	}
 
-	anthErr(w, http.StatusServiceUnavailable, "api_error", "exhausted all retries")
+	pool.IncrementRequestCount(out.idx)
+	logUsage(out.key, out.idx, http.MethodPost, target, resp.StatusCode, len(raw))
+
+	if stream {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			anthErr(w, http.StatusInternalServerError, "api_error", "streaming unsupported by server")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		streamOpenAIToAnthropic(w, f, resp.Body, model)
+		log.Printf("✅ [anthropic] streamed (key[%d], attempt %d)", out.idx, out.attempt)
+		return
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	translated := translateOpenAIResponse(body, model)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(translated)
+	log.Printf("✅ [anthropic] %d (key[%d], attempt %d)", resp.StatusCode, out.idx, out.attempt)
 }
 
 // anthropicCountTokensHandler returns a rough estimate so Claude Code's
@@ -715,21 +664,4 @@ func (s *ServerState) anthropicCountTokensHandler(w http.ResponseWriter, r *http
 	est := len(raw) / 4
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"input_tokens": est})
-}
-
-func logUsage(key string, idx int, target string, status, bodySize int) {
-	usageMu.Lock()
-	usageLogs = append(usageLogs, LogEntry{
-		Timestamp:       time.Now().Format(time.RFC3339),
-		Key:             key,
-		KeyIndex:        idx + 1,
-		Method:          http.MethodPost,
-		URL:             target,
-		Status:          status,
-		RequestBodySize: bodySize,
-	})
-	if len(usageLogs) > 1000 {
-		usageLogs = usageLogs[1:]
-	}
-	usageMu.Unlock()
 }
