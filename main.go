@@ -320,13 +320,17 @@ func newServerState(cfg Config, pool *KeyPool, auth *AdminAuth) *ServerState {
 	s.mux.HandleFunc("/dashboard", s.guard(s.dashboardHandler))
 	s.mux.HandleFunc("/clear", s.guardWrite(s.clearHandler))
 	s.mux.HandleFunc("/api/config", s.guardWrite(s.configHandler))
-	// Block service worker requests to prevent 404s and unnecessary upstream proxying
-	s.mux.HandleFunc("/sw.js", s.swHandler)
+	// Requests a browser makes on its own. Without these they fall through to
+	// the catch-all proxy, which spends a pooled key forwarding them upstream
+	// — opening the dashboard was enough to do it.
+	s.mux.HandleFunc("/sw.js", s.noContentHandler)
+	s.mux.HandleFunc("/favicon.ico", s.noContentHandler)
+	s.mux.HandleFunc("/robots.txt", s.noContentHandler)
 	s.mux.HandleFunc("/", s.proxyHandler)
 	return s
 }
 
-func (s *ServerState) swHandler(w http.ResponseWriter, r *http.Request) {
+func (s *ServerState) noContentHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 

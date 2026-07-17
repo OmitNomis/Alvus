@@ -1,618 +1,907 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Alvus | Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #0a0a0c;
-            --glass-bg: rgba(255, 255, 255, 0.03);
-            --glass-border: rgba(255, 255, 255, 0.08);
-            --accent-primary: #00d2ff;
-            --accent-secondary: #3a7bd5;
-            --text-main: #e0e0e0;
-            --text-dim: #a0a0a0;
-            --status-ready: #00ff88;
-            --status-cooling: #ffcc00;
-            --status-disabled: #ff4444;
-            --card-blur: 12px;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alvus | Dashboard</title>
+<style>
+    /* System font stack: the dashboard used to pull Inter from Google's CDN,
+       which meant three external requests from a tool whose whole pitch is a
+       zero-dependency binary you can run on a Pi with no internet. */
+    :root {
+        --bg-color: #0a0a0c;
+        --glass-bg: rgba(255, 255, 255, 0.03);
+        --glass-border: rgba(255, 255, 255, 0.08);
+        --accent-primary: #00d2ff;
+        --accent-secondary: #3a7bd5;
+        --text-main: #e0e0e0;
+        --text-dim: #a0a0a0;
+        --status-ready: #00ff88;
+        --status-cooling: #ffcc00;
+        --status-disabled: #ff4444;
+        --card-blur: 12px;
+        --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                "Liberation Mono", monospace;
+    }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Inter', sans-serif;
-        }
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
 
-        body {
-            background: var(--bg-color);
-            background-image: 
-                radial-gradient(circle at 20% 20%, rgba(0, 210, 255, 0.05) 0%, transparent 40%),
-                radial-gradient(circle at 80% 80%, rgba(58, 123, 213, 0.05) 0%, transparent 40%);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow-x: hidden;
-        }
+    body {
+        font-family: var(--font);
+        background: var(--bg-color);
+        background-image:
+            radial-gradient(circle at 20% 20%, rgba(0, 210, 255, 0.05) 0%, transparent 40%),
+            radial-gradient(circle at 80% 80%, rgba(58, 123, 213, 0.05) 0%, transparent 40%);
+        background-attachment: fixed;
+        color: var(--text-main);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow-x: hidden;
+    }
 
-        /* --- Layout --- */
-        .container {
-            max-width: 1200px;
-            width: 100%;
-            margin: 0 auto;
-            padding: 2rem;
-            flex-grow: 1;
-        }
+    /* --- Layout --- */
+    .container {
+        max-width: 1200px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 2rem;
+        flex-grow: 1;
+    }
 
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 3rem;
-        }
+    header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
 
-        .logo {
-            font-size: 1.5rem;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
+    .brand { display: flex; align-items: center; gap: 0.75rem; }
 
-        /* --- Navigation --- */
-        nav {
-            display: flex;
-            gap: 1rem;
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            padding: 0.5rem;
-            border-radius: 12px;
-            backdrop-filter: blur(var(--card-blur));
-        }
+    .logo {
+        font-size: 1.5rem;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
 
-        .nav-btn {
-            background: transparent;
-            border: none;
-            color: var(--text-dim);
-            padding: 0.6rem 1.2rem;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.2s;
-        }
+    /* Connection indicator — the old dashboard had no error handling at all,
+       so a dead server looked identical to an idle one. */
+    .conn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.75rem;
+        color: var(--text-dim);
+        padding: 0.25rem 0.6rem;
+        border: 1px solid var(--glass-border);
+        border-radius: 999px;
+        white-space: nowrap;
+    }
 
-        .nav-btn.active {
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-        }
+    .conn-dot {
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: var(--status-ready);
+        flex: none;
+    }
 
-        .nav-btn:hover:not(.active) {
-            color: white;
-            background: rgba(255, 255, 255, 0.05);
-        }
+    .conn.live .conn-dot { animation: pulse 2s ease-in-out infinite; }
+    .conn.down .conn-dot { background: var(--status-disabled); animation: none; }
+    .conn.down { color: var(--status-disabled); border-color: rgba(255, 68, 68, 0.3); }
+    .conn.paused .conn-dot { background: var(--text-dim); animation: none; }
 
-        /* --- Content Panels --- */
-        .panel {
-            display: none;
-            animation: fadeIn 0.3s ease-out;
-        }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+    }
 
-        .panel.active {
-            display: block;
-        }
+    /* --- Navigation --- */
+    nav {
+        display: flex;
+        gap: 0.25rem;
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        padding: 0.4rem;
+        border-radius: 12px;
+        backdrop-filter: blur(var(--card-blur));
+    }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
+    .nav-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-dim);
+        padding: 0.55rem 1.1rem;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 600;
+        font-family: inherit;
+        font-size: 0.9rem;
+        transition: color 0.15s, background 0.15s;
+    }
 
-        /* --- Cards & Components --- */
-        .card {
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            border-radius: 16px;
-            padding: 1.5rem;
-            backdrop-filter: blur(var(--card-blur));
-            margin-bottom: 1.5rem;
-        }
+    .nav-btn.active { background: rgba(255, 255, 255, 0.1); color: #fff; }
+    .nav-btn:hover:not(.active) { color: #fff; background: rgba(255, 255, 255, 0.05); }
+    .nav-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 
-        h2 {
-            font-size: 1.25rem;
-            margin-bottom: 1.5rem;
-            color: white;
-        }
+    /* --- Panels --- */
+    .panel { display: none; }
+    .panel.active { display: block; animation: fadeIn 0.25s ease-out; }
 
-        /* --- Status Grid --- */
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 1.5rem;
-        }
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
 
-        .key-card {
-            position: relative;
-            overflow: hidden;
-        }
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
 
-        .key-card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; width: 4px; height: 100%;
-        }
+    /* --- Cards --- */
+    .card {
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 16px;
+        padding: 1.5rem;
+        backdrop-filter: blur(var(--card-blur));
+        margin-bottom: 1.5rem;
+    }
 
-        .key-card.ready::before { background: var(--status-ready); }
-        .key-card.cooling::before { background: var(--status-cooling); }
-        .key-card.disabled::before { background: var(--status-disabled); }
+    h2 { font-size: 1.15rem; color: #fff; }
 
-        .key-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
+    /* --- Summary tiles --- */
+    .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
 
-        .key-val {
-            font-family: monospace;
-            color: var(--text-dim);
-            font-size: 0.85rem;
-            word-break: break-all;
-        }
+    .tile {
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 14px;
+        padding: 1.1rem 1.25rem;
+        backdrop-filter: blur(var(--card-blur));
+    }
 
-        .badge {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            font-weight: 700;
-            padding: 0.2rem 0.5rem;
-            border-radius: 4px;
-        }
+    .tile-label {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+        margin-bottom: 0.4rem;
+    }
 
-        .badge-ready { background: rgba(0, 255, 136, 0.1); color: var(--status-ready); }
-        .badge-cooling { background: rgba(255, 204, 0, 0.1); color: var(--status-cooling); }
-        .badge-disabled { background: rgba(255, 68, 68, 0.1); color: var(--status-disabled); }
+    .tile-val {
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: #fff;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+    }
 
-        .stat-row {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 1rem;
-            font-size: 0.85rem;
-            color: var(--text-dim);
-        }
+    .tile-sub { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.2rem; }
+    .tile-val.warn { color: var(--status-cooling); }
+    .tile-val.bad { color: var(--status-disabled); }
 
-        .stat-val { color: white; font-weight: 600; }
+    /* --- Key grid --- */
+    .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 1.25rem;
+    }
 
-        .key-index { font-size: 0.75rem; color: var(--text-dim); }
+    .key-card { position: relative; overflow: hidden; margin-bottom: 0; }
 
-        /* Replaces inline styles that previously lived in innerHTML strings. */
-        .col-time { color: var(--text-dim); font-size: 0.8rem; white-space: nowrap; }
-        .col-size { color: var(--text-dim); white-space: nowrap; }
-        .method { font-weight: 700; color: var(--accent-primary); }
+    .key-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; width: 4px; height: 100%;
+    }
 
-        .col-url {
-            max-width: 250px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
+    .key-card.ready::before { background: var(--status-ready); }
+    .key-card.cooling::before { background: var(--status-cooling); }
+    .key-card.disabled::before { background: var(--status-disabled); }
 
-        /* --- Table --- */
-        .table-container {
-            width: 100%;
-            overflow-x: auto;
-        }
+    .key-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-        }
+    .key-val {
+        font-family: var(--mono);
+        color: var(--text-dim);
+        font-size: 0.85rem;
+        word-break: break-all;
+    }
 
-        th {
-            text-align: left;
-            color: var(--text-dim);
-            font-weight: 600;
-            padding: 1rem;
-            border-bottom: 1px solid var(--glass-border);
-        }
+    .key-index { font-size: 0.75rem; color: var(--text-dim); }
 
-        td {
-            padding: 1rem;
-            border-bottom: 1px solid var(--glass-border);
-            color: var(--text-main);
-        }
+    .badge {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        font-weight: 700;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-variant-numeric: tabular-nums;
+    }
 
-        tr:last-child td { border-bottom: none; }
+    .badge-ready { background: rgba(0, 255, 136, 0.1); color: var(--status-ready); }
+    .badge-cooling { background: rgba(255, 204, 0, 0.1); color: var(--status-cooling); }
+    .badge-disabled { background: rgba(255, 68, 68, 0.1); color: var(--status-disabled); }
 
-        tr:hover td {
-            background: rgba(255, 255, 255, 0.02);
-        }
+    .stat-row {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 0.9rem;
+        font-size: 0.85rem;
+        color: var(--text-dim);
+        gap: 1rem;
+    }
 
-        .status-tag {
-            display: inline-block;
-            padding: 0.2rem 0.4rem;
-            border-radius: 4px;
-            font-weight: 700;
-            font-size: 0.75rem;
-        }
+    .stat-val { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
 
-        .status-tag.ok { background: rgba(0, 255, 136, 0.1); color: var(--status-ready); }
-        .status-tag.err { background: rgba(255, 68, 68, 0.1); color: var(--status-disabled); }
+    /* Load bar: RPM relative to the busiest key. */
+    .load {
+        margin-top: 1rem;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        overflow: hidden;
+    }
 
-        /* --- Forms --- */
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
+    .load-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+        transition: width 0.4s ease;
+    }
 
-        label {
-            display: block;
-            margin-bottom: 0.5rem;
-            font-size: 0.9rem;
-            color: var(--text-dim);
-        }
+    /* --- Table --- */
+    .table-container { width: 100%; overflow-x: auto; }
 
-        input[type="text"], input[type="number"], textarea {
-            width: 100%;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--glass-border);
-            border-radius: 8px;
-            padding: 0.75rem;
-            color: white;
-            font-size: 0.95rem;
-            outline: none;
-            transition: border-color 0.2s;
-        }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 
-        input:focus {
-            border-color: var(--accent-primary);
-        }
+    th {
+        text-align: left;
+        color: var(--text-dim);
+        font-weight: 600;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--glass-border);
+        white-space: nowrap;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
 
-        .btn {
-            background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
-            color: white;
-            border: none;
-            padding: 0.75rem 1.5rem;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.1s, opacity 0.2s;
-        }
+    td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--glass-border); color: var(--text-main); }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
-        .btn:hover { opacity: 0.9; }
-        .btn:active { transform: scale(0.98); }
+    .col-time { color: var(--text-dim); font-size: 0.8rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .col-size { color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .method { font-weight: 700; color: var(--accent-primary); font-size: 0.8rem; }
 
-        .btn-outline {
-            background: transparent;
-            border: 1px solid var(--glass-border);
-            color: var(--text-main);
-        }
+    .col-url {
+        max-width: 320px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 0.8rem;
+    }
 
-        .btn-outline:hover { background: rgba(255, 255, 255, 0.05); }
+    .status-tag {
+        display: inline-block;
+        padding: 0.15rem 0.45rem;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
+    }
 
-        .key-list-item {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
+    .status-tag.ok { background: rgba(0, 255, 136, 0.1); color: var(--status-ready); }
+    .status-tag.err { background: rgba(255, 68, 68, 0.1); color: var(--status-disabled); }
 
-        .remove-key-btn {
-            background: rgba(255, 68, 68, 0.1);
-            color: var(--status-disabled);
-            border: 1px solid rgba(255, 68, 68, 0.2);
-            padding: 0.5rem;
-            border-radius: 8px;
-            cursor: pointer;
-        }
+    /* --- Empty state --- */
+    .empty {
+        text-align: center;
+        padding: 3rem 1rem;
+        color: var(--text-dim);
+        font-size: 0.9rem;
+    }
 
-        /* --- Search & Filters --- */
-        .toolbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            gap: 1rem;
-        }
+    .empty-icon { font-size: 1.75rem; display: block; margin-bottom: 0.5rem; opacity: 0.5; }
 
-        .search-input {
-            max-width: 300px;
-        }
+    /* --- Forms --- */
+    .form-group { margin-bottom: 1.5rem; }
 
-        footer {
-            padding: 2rem;
-            text-align: center;
-            font-size: 0.8rem;
-            color: var(--text-dim);
-            border-top: 1px solid var(--glass-border);
-            margin-top: 3rem;
-        }
+    label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+        color: var(--text-dim);
+    }
 
-        /* Responsive */
-        @media (max-width: 768px) {
-            header { flex-direction: column; gap: 1.5rem; align-items: flex-start; }
-            .toolbar { flex-direction: column; align-items: stretch; }
-            .search-input { max-width: none; }
-        }
-    </style>
+    .hint { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.4rem; opacity: 0.8; }
+
+    input[type="text"] {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--glass-border);
+        border-radius: 8px;
+        padding: 0.75rem;
+        color: #fff;
+        font-size: 0.95rem;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus { border-color: var(--accent-primary); }
+    #keyInputsContainer input { font-family: var(--mono); font-size: 0.85rem; }
+
+    .btn {
+        background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+        color: #fff;
+        border: none;
+        padding: 0.75rem 1.5rem;
+        border-radius: 8px;
+        font-weight: 600;
+        font-family: inherit;
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: transform 0.1s, opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.9; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+
+    .btn-outline {
+        background: transparent;
+        border: 1px solid var(--glass-border);
+        color: var(--text-main);
+    }
+
+    .btn-outline:hover { background: rgba(255, 255, 255, 0.05); }
+
+    .key-list-item { display: flex; gap: 10px; margin-bottom: 10px; }
+
+    .remove-key-btn {
+        background: rgba(255, 68, 68, 0.1);
+        color: var(--status-disabled);
+        border: 1px solid rgba(255, 68, 68, 0.2);
+        padding: 0.5rem 0.85rem;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 1rem;
+        line-height: 1;
+        flex: none;
+    }
+
+    .remove-key-btn:hover { background: rgba(255, 68, 68, 0.2); }
+
+    /* --- Toolbar --- */
+    .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        gap: 1rem;
+    }
+
+    .search-input { max-width: 280px; }
+
+    /* --- Toast (replaces alert()) --- */
+    .toast {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 50%;
+        transform: translate(-50%, 150%);
+        background: #17171b;
+        border: 1px solid var(--glass-border);
+        color: var(--text-main);
+        padding: 0.85rem 1.25rem;
+        border-radius: 10px;
+        font-size: 0.875rem;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+        transition: transform 0.25s ease;
+        z-index: 50;
+        max-width: calc(100vw - 2rem);
+    }
+
+    .toast.show { transform: translate(-50%, 0); }
+    .toast.ok { border-color: rgba(0, 255, 136, 0.4); }
+    .toast.err { border-color: rgba(255, 68, 68, 0.5); }
+
+    footer {
+        padding: 2rem;
+        text-align: center;
+        font-size: 0.8rem;
+        color: var(--text-dim);
+        border-top: 1px solid var(--glass-border);
+        margin-top: 2rem;
+    }
+
+    @media (max-width: 768px) {
+        .container { padding: 1.25rem; }
+        header { flex-direction: column; align-items: flex-start; }
+        nav { width: 100%; }
+        .nav-btn { flex: 1; }
+        .toolbar { flex-direction: column; align-items: stretch; }
+        .search-input { max-width: none; }
+        .col-url { max-width: 160px; }
+    }
+</style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">ALVUS DASHBOARD</div>
-            <nav>
-                <button class="nav-btn active" data-panel="overview">Overview</button>
-                <button class="nav-btn" data-panel="logs">Logs</button>
-                <button class="nav-btn" data-panel="settings">Settings</button>
-            </nav>
-        </header>
 
-        <!-- Overview Panel -->
-        <main id="overview" class="panel active">
-            <div class="status-grid" id="statusGrid">
-                <!-- Key cards will be injected here -->
+<div class="container">
+    <header>
+        <div class="brand">
+            <div class="logo">ALVUS</div>
+            <span class="conn live" id="conn" title="Live connection to the proxy">
+                <span class="conn-dot"></span><span id="connText">live</span>
+            </span>
+        </div>
+        <nav>
+            <button class="nav-btn active" data-panel="overview">Overview</button>
+            <button class="nav-btn" data-panel="logs">Logs</button>
+            <button class="nav-btn" data-panel="settings">Settings</button>
+        </nav>
+    </header>
+
+    <!-- Overview -->
+    <main id="overview" class="panel active">
+        <div class="tiles">
+            <div class="tile">
+                <div class="tile-label">Keys ready</div>
+                <div class="tile-val" id="tileReady">—</div>
+                <div class="tile-sub" id="tileReadySub">&nbsp;</div>
             </div>
-        </main>
+            <div class="tile">
+                <div class="tile-label">Pool RPM</div>
+                <div class="tile-val" id="tileRpm">—</div>
+                <div class="tile-sub">requests in last 60s</div>
+            </div>
+            <div class="tile">
+                <div class="tile-label">Requests</div>
+                <div class="tile-val" id="tileReqs">—</div>
+                <div class="tile-sub">in the log buffer</div>
+            </div>
+            <div class="tile">
+                <div class="tile-label">Errors</div>
+                <div class="tile-val" id="tileErrs">—</div>
+                <div class="tile-sub" id="tileErrsSub">&nbsp;</div>
+            </div>
+        </div>
+        <div class="status-grid" id="statusGrid"></div>
+    </main>
 
-        <!-- Logs Panel -->
-        <main id="logs" class="panel">
-            <div class="card">
-                <div class="toolbar">
-                    <h2>Recent Activity</h2>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <input type="text" id="logSearch" class="search-input" placeholder="Search logs...">
-                        <button id="clearLogsBtn" class="btn btn-outline">Clear</button>
-                    </div>
+    <!-- Logs -->
+    <main id="logs" class="panel">
+        <div class="card">
+            <div class="toolbar">
+                <h2>Recent Activity</h2>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="logSearch" class="search-input" placeholder="Filter logs…" aria-label="Filter logs">
+                    <button id="clearLogsBtn" class="btn btn-outline">Clear</button>
                 </div>
-                <div class="table-container">
-                    <table id="logTable">
-                        <thead>
-                            <tr>
-                                <th>Timestamp</th>
-                                <th>Method</th>
-                                <th>Endpoint</th>
-                                <th>Status</th>
-                                <th>Key</th>
-                                <th>Size</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <!-- Logs will be injected here -->
-                        </tbody>
-                    </table>
+            </div>
+            <div class="table-container">
+                <table id="logTable">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Method</th>
+                            <th>Endpoint</th>
+                            <th>Status</th>
+                            <th>Key</th>
+                            <th>Size</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="empty" id="logEmpty" hidden>
+                <span class="empty-icon">·</span>
+                <span id="logEmptyText">No requests yet — point a client at this proxy.</span>
+            </div>
+        </div>
+    </main>
+
+    <!-- Settings -->
+    <main id="settings" class="panel">
+        <div class="card">
+            <h2 style="margin-bottom: 1.5rem;">System Configuration</h2>
+            <form id="configForm">
+                <div class="form-group">
+                    <label for="targetBase">Target Base URL</label>
+                    <input type="text" id="targetBase" name="targetBase" placeholder="https://integrate.api.nvidia.com/v1" spellcheck="false">
+                    <div class="hint">Any OpenAI-compatible endpoint.</div>
                 </div>
-            </div>
-        </main>
+                <div class="form-group">
+                    <label for="genaiBase">GenAI Base URL</label>
+                    <input type="text" id="genaiBase" name="genaiBase" placeholder="https://ai.api.nvidia.com" spellcheck="false">
+                    <div class="hint">Used for <code>/genai/</code> paths.</div>
+                </div>
+                <div class="form-group">
+                    <label>API Keys Pool</label>
+                    <div id="keyInputsContainer"></div>
+                    <button type="button" id="addKeyBtn" class="btn btn-outline" style="margin-top: 10px; width: 100%;">+ Add Another Key</button>
+                    <div class="hint">Masked keys (<code>nvapi-ab…wxyz</code>) are left untouched when saved. Replace one to change it.</div>
+                </div>
+                <button type="submit" class="btn" style="width: 100%;" id="saveBtn">Save &amp; Apply Configuration</button>
+            </form>
+        </div>
+    </main>
+</div>
 
-        <!-- Settings Panel -->
-        <main id="settings" class="panel">
-            <div class="card">
-                <h2>System Configuration</h2>
-                <form id="configForm">
-                    <div class="form-group">
-                        <label for="targetBase">Target Base URL (NVIDIA API)</label>
-                        <input type="text" id="targetBase" name="targetBase" placeholder="https://integrate.api.nvidia.com/v1">
-                    </div>
-                    <div class="form-group">
-                        <label for="genaiBase">GenAI Base URL</label>
-                        <input type="text" id="genaiBase" name="genaiBase" placeholder="https://ai.api.nvidia.com">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>API Keys Pool</label>
-                        <div id="keyInputsContainer">
-                            <!-- Dynamic key inputs will be injected here -->
-                        </div>
-                        <button type="button" id="addKeyBtn" class="btn btn-outline" style="margin-top: 10px; width: 100%;">+ Add Another Key</button>
-                    </div>
+<footer>Alvus Multi-Key Proxy</footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-                    <div style="margin-top: 2rem;">
-                        <button type="submit" class="btn" style="width: 100%;">Save & Apply Configuration</button>
-                    </div>
-                </form>
-            </div>
-        </main>
-    </div>
+<script>
+    // ---------------------------------------------------------------
+    // Rendering rule: build nodes, never assign untrusted data to
+    // innerHTML. The proxied URL in a log row is attacker-controlled.
+    // ---------------------------------------------------------------
+    function el(tag, className, text) {
+        const n = document.createElement(tag);
+        if (className) n.className = className;
+        if (text !== undefined && text !== null) n.textContent = String(text);
+        return n;
+    }
 
-    <footer>
-        &copy; 2026 Alvus Multi-Key Proxy
-    </footer>
+    function statRow(label, value) {
+        const row = el('div', 'stat-row');
+        row.appendChild(el('span', null, label));
+        row.appendChild(el('span', 'stat-val', value));
+        return row;
+    }
 
-    <script>
-        // --- Navigation ---
-        const navBtns = document.querySelectorAll('.nav-btn');
-        const panels = document.querySelectorAll('.panel');
+    function clear(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+    }
 
-        navBtns.forEach(btn => {
-            btn.addEventListener('click', () => {
-                const panelId = btn.getAttribute('data-panel');
-                
-                navBtns.forEach(b => b.classList.remove('active'));
-                panels.forEach(p => p.classList.remove('active'));
-                
-                btn.classList.add('active');
-                document.getElementById(panelId).classList.add('active');
+    const ZERO_TIME = '0001-01-01T00:00:00Z';
+    function fmtTime(ts, fallback) {
+        return ts && ts !== ZERO_TIME ? new Date(ts).toLocaleTimeString() : fallback;
+    }
 
-                if(panelId === 'settings') loadConfig();
-            });
+    function secsUntil(ts) {
+        if (!ts || ts === ZERO_TIME) return 0;
+        return Math.max(0, Math.ceil((new Date(ts).getTime() - Date.now()) / 1000));
+    }
+
+    // --- Connection state -------------------------------------------
+    // The old dashboard had no .catch anywhere: if Alvus died, the UI
+    // simply froze showing stale numbers with no hint anything was wrong.
+    const connEl = document.getElementById('conn');
+    const connText = document.getElementById('connText');
+    let connDown = false;
+
+    function setConn(state, label) {
+        connEl.className = 'conn ' + state;
+        connText.textContent = label;
+    }
+
+    function markUp() {
+        if (connDown) { connDown = false; setConn('live', 'live'); }
+    }
+
+    function markDown() {
+        if (!connDown) { connDown = true; setConn('down', 'disconnected'); }
+    }
+
+    function getJSON(url) {
+        return fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(res => {
+                if (!res.ok) throw new Error(url + ' -> ' + res.status);
+                return res.json();
+            })
+            .then(data => { markUp(); return data; })
+            .catch(err => { markDown(); throw err; });
+    }
+
+    // --- Toast (replaces blocking alert()) --------------------------
+    const toastEl = document.getElementById('toast');
+    let toastTimer;
+    function toast(msg, kind) {
+        clearTimeout(toastTimer);
+        toastEl.textContent = msg;
+        toastEl.className = 'toast show ' + (kind || '');
+        toastTimer = setTimeout(() => { toastEl.className = 'toast ' + (kind || ''); }, 3200);
+    }
+
+    // --- Navigation -------------------------------------------------
+    const navBtns = document.querySelectorAll('.nav-btn');
+    const panels = document.querySelectorAll('.panel');
+
+    function show(panelId) {
+        navBtns.forEach(b => b.classList.toggle('active', b.dataset.panel === panelId));
+        panels.forEach(p => p.classList.toggle('active', p.id === panelId));
+        if (panelId === 'settings') loadConfig();
+        if (panelId === 'logs') updateLogs();
+        if (panelId === 'overview') updateStatus();
+        if (location.hash.slice(1) !== panelId) history.replaceState(null, '', '#' + panelId);
+    }
+
+    navBtns.forEach(btn => btn.addEventListener('click', () => show(btn.dataset.panel)));
+
+    // --- Overview ---------------------------------------------------
+    let lastDetails = [];
+
+    function renderTiles(details, logs) {
+        const ready = details.filter(k => k.status === 'ready').length;
+        const disabled = details.filter(k => k.status === 'disabled').length;
+        const cooling = details.length - ready - disabled;
+        const rpm = details.reduce((a, k) => a + (k.requests_per_minute || 0), 0);
+
+        const readyEl = document.getElementById('tileReady');
+        readyEl.textContent = ready + ' / ' + details.length;
+        readyEl.className = 'tile-val' + (ready === 0 ? ' bad' : (cooling || disabled ? ' warn' : ''));
+
+        const bits = [];
+        if (cooling) bits.push(cooling + ' cooling');
+        if (disabled) bits.push(disabled + ' disabled');
+        document.getElementById('tileReadySub').textContent = bits.length ? bits.join(', ') : 'all healthy';
+
+        document.getElementById('tileRpm').textContent = rpm;
+
+        if (logs) {
+            const errs = logs.filter(l => l.status >= 400).length;
+            document.getElementById('tileReqs').textContent = logs.length;
+            const errEl = document.getElementById('tileErrs');
+            errEl.textContent = errs;
+            errEl.className = 'tile-val' + (errs ? ' bad' : '');
+            const pct = logs.length ? Math.round((errs / logs.length) * 100) : 0;
+            document.getElementById('tileErrsSub').textContent = logs.length ? pct + '% of requests' : ' ';
+        }
+    }
+
+    function renderKeys(details) {
+        const grid = document.getElementById('statusGrid');
+        clear(grid);
+        const peak = Math.max(1, ...details.map(k => k.requests_per_minute || 0));
+
+        details.forEach(key => {
+            const cooling = key.status.startsWith('cooling');
+            const statusClass = key.status === 'ready' ? 'ready' : (key.status === 'disabled' ? 'disabled' : 'cooling');
+            const card = el('div', 'card key-card ' + statusClass);
+
+            const header = el('div', 'key-header');
+            // Live countdown replaces the server's snapshot label, which only
+            // ever moved once every poll.
+            const label = cooling ? 'cooling ' + secsUntil(key.cooldown_until) + 's' : key.status;
+            const badge = el('span', 'badge badge-' + statusClass, label);
+            if (cooling) {
+                badge.dataset.until = key.cooldown_until;
+                badge.dataset.tick = '1';
+            }
+            header.appendChild(badge);
+            header.appendChild(el('span', 'key-index', '#' + (key.index + 1)));
+            card.appendChild(header);
+
+            card.appendChild(el('div', 'key-val', key.key));
+            card.appendChild(statRow('RPM', key.requests_per_minute));
+            card.appendChild(statRow('Last used', fmtTime(key.last_used, 'never')));
+
+            const load = el('div', 'load');
+            const fill = el('div', 'load-fill');
+            fill.style.width = Math.round(((key.requests_per_minute || 0) / peak) * 100) + '%';
+            load.appendChild(fill);
+            card.appendChild(load);
+
+            grid.appendChild(card);
+        });
+    }
+
+    function updateStatus() {
+        if (!document.getElementById('overview').classList.contains('active')) return Promise.resolve();
+        return getJSON('/health')
+            .then(data => {
+                lastDetails = data.details || [];
+                renderKeys(lastDetails);
+                return getJSON('/logs').catch(() => null);
+            })
+            .then(logs => renderTiles(lastDetails, logs))
+            .catch(() => {});
+    }
+
+    // Tick the cooldown badges every second so the countdown is live
+    // rather than jumping in 5s steps.
+    setInterval(() => {
+        document.querySelectorAll('[data-tick]').forEach(b => {
+            const left = secsUntil(b.dataset.until);
+            b.textContent = left > 0 ? 'cooling ' + left + 's' : 'ready';
+        });
+    }, 1000);
+
+    // --- Logs -------------------------------------------------------
+    let logCache = [];
+
+    function renderLogs() {
+        const tbody = document.querySelector('#logTable tbody');
+        const emptyEl = document.getElementById('logEmpty');
+        const emptyText = document.getElementById('logEmptyText');
+        const q = document.getElementById('logSearch').value.toLowerCase();
+        clear(tbody);
+
+        const rows = logCache.slice().reverse().filter(l =>
+            !q || (l.url + ' ' + l.method + ' ' + l.status + ' ' + l.key).toLowerCase().includes(q));
+
+        rows.forEach(log => {
+            const tr = el('tr');
+            tr.appendChild(el('td', 'col-time', fmtTime(log.timestamp, '—')));
+            const method = el('td');
+            method.appendChild(el('span', 'method', log.method));
+            tr.appendChild(method);
+            const url = el('td', 'col-url', log.url);
+            url.title = log.url;
+            tr.appendChild(url);
+            const status = el('td');
+            status.appendChild(el('span', 'status-tag ' + (log.status < 400 ? 'ok' : 'err'), log.status));
+            tr.appendChild(status);
+            tr.appendChild(el('td', 'key-val', '#' + log.key_index));
+            tr.appendChild(el('td', 'col-size', (log.request_body_size / 1024).toFixed(1) + ' KB'));
+            tbody.appendChild(tr);
         });
 
-        // --- DOM helpers ---
-        // Everything rendered below is built with createElement/textContent
-        // rather than innerHTML. The proxied request URL is attacker-controlled
-        // (it is whatever path was sent to Alvus), so string-building HTML from
-        // it is a stored-XSS sink.
-        function el(tag, className, text) {
-            const n = document.createElement(tag);
-            if (className) n.className = className;
-            if (text !== undefined && text !== null) n.textContent = String(text);
-            return n;
+        const isEmpty = rows.length === 0;
+        emptyEl.hidden = !isEmpty;
+        document.querySelector('#logTable').hidden = isEmpty;
+        if (isEmpty) {
+            emptyText.textContent = logCache.length
+                ? 'No requests match “' + q + '”.'
+                : 'No requests yet — point a client at this proxy.';
         }
+    }
 
-        function statRow(label, value) {
-            const row = el('div', 'stat-row');
-            row.appendChild(el('span', null, label));
-            row.appendChild(el('span', 'stat-val', value));
-            return row;
-        }
+    function updateLogs() {
+        if (!document.getElementById('logs').classList.contains('active')) return Promise.resolve();
+        return getJSON('/logs')
+            .then(data => { logCache = data || []; renderLogs(); })
+            .catch(() => {});
+    }
 
-        const ZERO_TIME = '0001-01-01T00:00:00Z';
-        function fmtTime(ts, fallback) {
-            return ts && ts !== ZERO_TIME ? new Date(ts).toLocaleTimeString() : fallback;
-        }
+    // Filtering is client-side against the cache — typing used to trigger a
+    // refetch of the whole 1000-entry buffer on every poll.
+    document.getElementById('logSearch').addEventListener('input', renderLogs);
 
-        function clear(node) {
-            while (node.firstChild) node.removeChild(node.firstChild);
-        }
+    document.getElementById('clearLogsBtn').addEventListener('click', function() {
+        // JSON content-type required: the server rejects writes that could
+        // have come from a cross-site form post.
+        fetch('/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+            .then(res => {
+                if (!res.ok) throw new Error(res.status);
+                logCache = [];
+                renderLogs();
+                toast('Activity log cleared.', 'ok');
+            })
+            .catch(() => toast('Could not clear the log.', 'err'));
+    });
 
-        // --- Data Fetching ---
-        function updateStatus() {
-            if (!document.getElementById('overview').classList.contains('active')) return;
+    // --- Settings ---------------------------------------------------
+    function addKeyInput(val) {
+        const container = document.getElementById('keyInputsContainer');
+        const div = el('div', 'key-list-item');
 
-            fetch('/health')
-                .then(res => res.json())
-                .then(data => {
-                    const grid = document.getElementById('statusGrid');
-                    clear(grid);
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.name = 'apiKeys[]';
+        input.placeholder = 'nvapi-…';
+        input.required = true;
+        input.spellcheck = false;
+        input.value = val || '';
 
-                    data.details.forEach(key => {
-                        const statusClass = key.status === 'ready' ? 'ready' : (key.status === 'disabled' ? 'disabled' : 'cooling');
-                        const card = el('div', 'card key-card ' + statusClass);
+        const remove = el('button', 'remove-key-btn', '×');
+        remove.type = 'button';
+        remove.title = 'Remove this key';
+        remove.setAttribute('aria-label', 'Remove this key');
 
-                        const header = el('div', 'key-header');
-                        header.appendChild(el('span', 'badge badge-' + statusClass, key.status));
-                        header.appendChild(el('span', 'key-index', '#' + (key.index + 1)));
-                        card.appendChild(header);
+        div.appendChild(input);
+        div.appendChild(remove);
+        container.appendChild(div);
 
-                        card.appendChild(el('div', 'key-val', key.key));
-                        card.appendChild(statRow('RPM', key.requests_per_minute));
-                        card.appendChild(statRow('Cooldown Until', fmtTime(key.cooldown_until, 'N/A')));
-                        card.appendChild(statRow('Last Used', fmtTime(key.last_used, 'Never')));
-
-                        grid.appendChild(card);
-                    });
-                });
-        }
-
-        function updateLogs() {
-            if (!document.getElementById('logs').classList.contains('active')) return;
-
-            fetch('/logs')
-                .then(res => res.json())
-                .then(data => {
-                    const tbody = document.querySelector('#logTable tbody');
-                    const search = document.getElementById('logSearch').value.toLowerCase();
-                    clear(tbody);
-
-                    data.slice().reverse().forEach(log => {
-                        if (search && !JSON.stringify(log).toLowerCase().includes(search)) return;
-
-                        const tr = el('tr');
-                        tr.appendChild(el('td', 'col-time', fmtTime(log.timestamp, '—')));
-
-                        const method = el('td');
-                        method.appendChild(el('span', 'method', log.method));
-                        tr.appendChild(method);
-
-                        tr.appendChild(el('td', 'col-url', log.url));
-
-                        const status = el('td');
-                        status.appendChild(el('span', 'status-tag ' + (log.status < 400 ? 'ok' : 'err'), log.status));
-                        tr.appendChild(status);
-
-                        tr.appendChild(el('td', 'key-val', 'Key #' + log.key_index));
-                        tr.appendChild(el('td', 'col-size', (log.request_body_size / 1024).toFixed(1) + ' KB'));
-                        tbody.appendChild(tr);
-                    });
-                });
-        }
-
-        // --- Settings Management ---
-        function addKeyInput(val) {
-            const container = document.getElementById('keyInputsContainer');
-            const div = el('div', 'key-list-item');
-
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.name = 'apiKeys[]';
-            input.placeholder = 'nvapi-...';
-            input.required = true;
-            input.value = val || '';
-
-            const remove = el('button', 'remove-key-btn', '×');
-            remove.type = 'button';
-            remove.title = 'Remove this key';
-
-            div.appendChild(input);
-            div.appendChild(remove);
-            container.appendChild(div);
-
-            remove.addEventListener('click', function() {
-                if (container.children.length > 1) {
-                    div.remove();
-                } else {
-                    input.value = '';
-                }
-            });
-        }
-
-        function loadConfig() {
-            fetch('/api/config')
-                .then(function(res) { return res.json(); })
-                .then(function(data) {
-                    document.getElementById('targetBase').value = data.targetBase;
-                    document.getElementById('genaiBase').value = data.genaiBase;
-                    
-                    const container = document.getElementById('keyInputsContainer');
-                    clear(container);
-                    if (data.keys && data.keys.length > 0) {
-                        data.keys.forEach(function(k) { addKeyInput(k); });
-                    } else {
-                        addKeyInput();
-                    }
-                });
-        }
-
-        document.getElementById('addKeyBtn').addEventListener('click', function() { addKeyInput(); });
-
-        document.getElementById('configForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const keys = formData.getAll('apiKeys[]');
-            const config = {
-                targetBase: formData.get('targetBase'),
-                genaiBase: formData.get('genaiBase'),
-                keys: keys.filter(function(k) { return k.trim() !== ''; })
-            };
-
-            fetch('/api/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config)
-            }).then(function(res) {
-                if(res.ok) alert('Configuration saved! The server will reload automatically in a few seconds.');
-                else alert('Failed to save configuration.');
-            });
+        remove.addEventListener('click', function() {
+            if (container.children.length > 1) div.remove();
+            else input.value = '';
         });
+    }
 
-        document.getElementById('clearLogsBtn').addEventListener('click', function() {
-            // Content-Type must be JSON: the server rejects writes that could
-            // have originated from a cross-site <form> post.
-            fetch('/clear', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            }).then(function() { updateLogs(); });
-        });
+    function loadConfig() {
+        return getJSON('/api/config')
+            .then(function(data) {
+                document.getElementById('targetBase').value = data.targetBase || '';
+                document.getElementById('genaiBase').value = data.genaiBase || '';
+                const container = document.getElementById('keyInputsContainer');
+                clear(container);
+                if (data.keys && data.keys.length) data.keys.forEach(addKeyInput);
+                else addKeyInput();
+            })
+            .catch(() => toast('Could not load configuration.', 'err'));
+    }
 
-        // Polling
-        setInterval(updateStatus, 5000);
-        setInterval(updateLogs, 5000);
+    document.getElementById('addKeyBtn').addEventListener('click', () => addKeyInput());
+
+    document.getElementById('configForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('saveBtn');
+        const formData = new FormData(e.target);
+        const config = {
+            targetBase: formData.get('targetBase'),
+            genaiBase: formData.get('genaiBase'),
+            keys: formData.getAll('apiKeys[]').filter(k => k.trim() !== '')
+        };
+
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        })
+            .then(res => res.text().then(body => ({ ok: res.ok, status: res.status, body: body })))
+            .then(r => {
+                if (r.ok) toast('Configuration saved and applied.', 'ok');
+                else if (r.status === 202) toast('Saved, but the reload failed — check the server log.', 'err');
+                else toast(r.body.trim() || ('Save failed (' + r.status + ').'), 'err');
+                if (r.ok) loadConfig();
+            })
+            .catch(() => toast('Could not reach the server.', 'err'))
+            .finally(() => {
+                btn.disabled = false;
+                btn.textContent = 'Save & Apply Configuration';
+            });
+    });
+
+    // --- Polling ----------------------------------------------------
+    // Only the visible panel polls, and polling stops entirely while the
+    // tab is hidden — the old build hammered /health and /logs every 5s
+    // forever, in the background, whether or not anyone was looking.
+    let timer = null;
+
+    function poll() {
         updateStatus();
         updateLogs();
+    }
 
-    </script>
+    function startPolling() {
+        if (timer) return;
+        poll();
+        timer = setInterval(poll, 5000);
+        if (!connDown) setConn('live', 'live');
+    }
+
+    function stopPolling() {
+        clearInterval(timer);
+        timer = null;
+        setConn('paused', 'paused');
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stopPolling();
+        else startPolling();
+    });
+
+    show((location.hash.slice(1) || 'overview'));
+    startPolling();
+</script>
 </body>
 </html>
