@@ -588,20 +588,16 @@ func (s *ServerState) anthropicHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := cfg.TargetBase + "/chat/completions"
-	timeout := 120 * time.Second
-	if stream {
-		timeout = 0 // never cut a live stream
-	}
-	client := &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
 
 	log.Printf("→ [anthropic] %s model=%s stream=%v (%d→%d bytes)", target, model, stream, len(raw), len(oaiBody))
 
-	out, rerr := withKeyRotation(r.Context(), cfg, pool, client, "[anthropic] ", func(key string) (*http.Request, error) {
+	// Zero deadline for streams — never cut a live one.
+	opts := rotateOpts{PerAttemptTimeout: nonStreamTimeout}
+	if stream {
+		opts.PerAttemptTimeout = 0
+	}
+
+	out, rerr := withKeyRotation(r.Context(), cfg, pool, opts, "[anthropic] ", func(key string) (*http.Request, error) {
 		req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(oaiBody))
 		if err != nil {
 			return nil, err
@@ -617,6 +613,8 @@ func (s *ServerState) anthropicHandler(w http.ResponseWriter, r *http.Request) {
 		anthErr(w, rerr.status, "api_error", rerr.msg)
 		return
 	}
+	// LIFO: body closes first, then the attempt context is released.
+	defer out.release()
 	defer out.resp.Body.Close()
 	resp := out.resp
 

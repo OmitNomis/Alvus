@@ -22,6 +22,7 @@ var envKeys = []string{
 	"GENAI_BASE_URL",
 	"PORT",
 	"COOLDOWN_SEC",
+	"MAX_RETRIES",
 	"OVERRIDE_MODEL",
 	"ADMIN_TOKEN",
 }

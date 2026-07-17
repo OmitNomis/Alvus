@@ -259,7 +259,7 @@ func buildConfig() (Config, *KeyPool, error) {
 		TargetBase:    strings.TrimRight(getenv("TARGET_BASE_URL", "https://integrate.api.nvidia.com/v1"), "/"),
 		GenaiBase:     strings.TrimRight(getenv("GENAI_BASE_URL", "https://ai.api.nvidia.com"), "/"),
 		Port:          getenv("PORT", "3000"),
-		MaxRetries:    10,
+		MaxRetries:    getenvInt("MAX_RETRIES", 10),
 		CooldownSec:   getenvInt("COOLDOWN_SEC", 60),
 		OverrideModel: getenv("OVERRIDE_MODEL", ""),
 	}
@@ -470,13 +470,6 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	pool := s.pool
 	s.mu.RUnlock()
 
-	client := &http.Client{
-		Timeout: 120 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
 	var bodyBytes []byte
 	if r.Body != nil {
 		var err error
@@ -508,7 +501,15 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("→ %s %s (%d bytes)", r.Method, target, len(bodyBytes))
 
-	out, rerr := withKeyRotation(r.Context(), cfg, pool, client, "", func(key string) (*http.Request, error) {
+	// A streaming response must not carry a deadline: the old 120s client
+	// timeout counted body reads, so any SSE turn longer than two minutes was
+	// cut off mid-stream. Non-streaming calls keep a per-attempt cap.
+	opts := rotateOpts{PerAttemptTimeout: nonStreamTimeout}
+	if wantsStream(bodyBytes, r.Header) {
+		opts.PerAttemptTimeout = 0
+	}
+
+	out, rerr := withKeyRotation(r.Context(), cfg, pool, opts, "", func(key string) (*http.Request, error) {
 		req, err := http.NewRequest(r.Method, target, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
@@ -525,6 +526,8 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "alvus: "+rerr.msg, rerr.status)
 		return
 	}
+	// LIFO: body closes first, then the attempt context is released.
+	defer out.release()
 	defer out.resp.Body.Close()
 
 	resp := out.resp
