@@ -1,0 +1,45 @@
+name: CI
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+jobs:
+  check:
+    name: Build, vet & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+      # No go.mod by design (zero deps, stdlib only), so everything runs in
+      # command-line-arguments mode against the file list.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+      - name: go vet
+        run: go vet *.go
+      - name: Build
+        run: go build -o /tmp/alvus *.go
+      - name: Smoke test
+        run: |
+          # Boot with a throwaway key and confirm the server answers and that
+          # the dashboard was actually embedded.
+          printf 'API_KEYS=nvapi-ci-smoke-test-key\nPORT=3123\n' > .env
+          /tmp/alvus --local &
+          pid=$!
+          for i in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:3123/health >/dev/null 2>&1 && break
+            sleep 0.25
+          done
+          curl -fsS http://127.0.0.1:3123/health | grep -q '"status":"ok"'
+          curl -fsS http://127.0.0.1:3123/dashboard | grep -q 'ALVUS'
+          # Browser noise must not reach the catch-all proxy.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3123/favicon.ico)" = "204"
+          kill $pid

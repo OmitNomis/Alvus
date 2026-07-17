@@ -73,11 +73,12 @@ If it speaks OpenAI-compatible API, it works with Alvus.
 | 🚫 **Silent retry on 429/502/503** | Failed key enters cooldown, request retries instantly with the next           |
 | ⏱️ **Retry-After support**         | Respects upstream `Retry-After` headers — no blind fixed waits                |
 | 🔑 **Auto-disable on 401/403**     | Invalid or revoked keys are permanently removed from the pool                 |
-| 📡 **Streaming passthrough**       | SSE and chunked responses piped with zero buffering overhead                  |
+| 📡 **Streaming passthrough**       | SSE and chunked responses piped with zero buffering and no timeout ceiling    |
 | ❤️ **Health endpoint**             | `GET /health` shows live key status, cooldown timers, and requests/minute     |
-| 🖥️ **Interactive Dashboard**       | `GET /dashboard` — Premium Glassmorphism Dark UI for real-time monitoring     |
+| 🖥️ **Interactive Dashboard**       | `GET /dashboard` — glassmorphism dark UI, fully offline, zero external assets |
 | ⚡ **Live Activity Logs**          | Searchable, 1000-entry memory cache to track all request activity             |
 | 🔧 **Dynamic Configuration**       | Update keys and base URLs directly from the dashboard; writes to `.env`       |
+| 🔒 **Loopback by default**         | Binds `127.0.0.1`; LAN exposure is opt-in and requires an admin token         |
 | 🤖 **Claude Code mode**            | Translates Anthropic Messages API ⇄ OpenAI so Claude Code runs on any backend |
 | 🪶 **Zero dependencies**           | Pure Go stdlib. One binary                                                    |
 | 🔧 **`.env` support**              | Built-in parser — no `godotenv`, no extras                                    |
@@ -132,9 +133,20 @@ TARGET_BASE_URL=https://integrate.api.nvidia.com/v1
 
 # Seconds to cool down a key after a 429, 502, or 503 (default: 60)
 COOLDOWN_SEC=60
+
+# Attempts before giving up and returning 503 (default: 10)
+MAX_RETRIES=10
+
+# Guards /dashboard, /logs, /clear and /api/config. Only consulted when
+# bound to a non-loopback address; see "Access & the admin surface".
+ADMIN_TOKEN=
 ```
 
 Real environment variables take precedence over `.env` — useful for systemd or containers.
+
+Editing `.env` hot-reloads within a second. Saving from the dashboard rewrites
+only the keys it owns, so your comments and any other variables survive intact.
+(`PORT` is the exception: moving the listener needs a restart.)
 
 ---
 
@@ -144,21 +156,38 @@ Real environment variables take precedence over `.env` — useful for systemd or
 ./alvus
 ```
 
-You can also use command-line flags to control server access:
+```
+⚡ Alvus 127.0.0.1:3000 → https://integrate.api.nvidia.com/v1 | genai → https://ai.api.nvidia.com (3 keys)
+   Dashboard: http://127.0.0.1:3000/dashboard (loopback only — use --network-only for LAN)
+```
 
-- `--local`: Binds to `127.0.0.1` (only accessible from the device it's running on).
-- `--network-only`: Binds to `0.0.0.0` (accessible via LAN — perfect for home servers).
+#### Access & the admin surface
+
+Alvus binds to **`127.0.0.1` by default**. It holds live API keys and serves an
+admin surface that can rewrite the upstream URL, so reaching the network is a
+deliberate opt-in rather than the default:
+
+- `--local` — bind `127.0.0.1`. This is the default; the flag is kept for compatibility.
+- `--network-only` — bind `0.0.0.0`, reachable over the LAN.
+
+`/dashboard`, `/logs`, `/clear` and `/api/config` expose masked keys and can
+rewrite your configuration. On a loopback bind they are open — that is the same
+trust boundary as the `.env` file sitting next to the binary. On a
+**non-loopback** bind they require a token. Set `ADMIN_TOKEN` to pin one, or
+Alvus generates one and logs it at startup:
 
 ```bash
-# Example for a home server
 ./alvus --network-only
+# 🔐 Admin token (set ADMIN_TOKEN in .env to pin it): 4f3c…
+#    Dashboard: http://<this-host>:3000/dashboard?token=4f3c…
 ```
 
-```
-⚡ Alvus 0.0.0.0:3000 → https://integrate.api.nvidia.com/v1
-   Keys    : 3 loaded
-   Cooldown: 60s per key on 429/502/503
-```
+Open the dashboard once with `?token=…` and it trades the token for a
+`SameSite=Strict` cookie. Scripts can pass `X-Alvus-Token`, a bearer header, or
+the query parameter.
+
+> The proxy routes themselves (`/v1/...`, `/health`) are never token-gated —
+> clients point at them with a dummy key, and gating would break every config.
 
 ---
 
@@ -224,12 +253,18 @@ aider --openai-api-base http://localhost:3000/v1 --openai-api-key sk-dummy
 4. Request forwarded upstream with that key injected
    │
    ├── ✅ 2xx/3xx → request count incremented, headers + body streamed back, done
-   ├── ❄️ 429/502/503 → key enters cooldown, retry with next key
+   ├── ❄️ 429/502/503 → key enters cooldown (honouring Retry-After), retry with next key
    ├── 🔑 401/403 → key permanently removed from pool
-   └── ⚠️ other 4xx/5xx → passed through as-is
+   ├── ⚠️ 5xx → retried with backoff (100ms doubling to a 2s cap)
+   └── ⚠️ 4xx → terminal, passed through as-is
 ```
 
 Your agent sees a clean stream or a final error. Never a 429.
+
+Streaming responses carry no deadline — a long agentic turn will not be cut off
+mid-stream. Non-streaming attempts get a 120s per-attempt cap. If your client
+hangs up, the in-flight upstream request is cancelled with it rather than
+running on and burning a key nobody is waiting for.
 
 ---
 
@@ -349,13 +384,15 @@ Alvus handles `SIGINT` and `SIGTERM` gracefully, allowing in-flight requests to 
 No. Download a prebuilt binary from [Releases](../../releases).
 
 **Are my keys safe?**
-Keys live in `.env` on your machine and are only ever sent to the upstream provider. Alvus logs key indices, never key values.
+Keys live in `.env` on your machine and are only ever sent to whatever `TARGET_BASE_URL` points at. Alvus logs key indices and masked values, never full keys, and the dashboard only ever receives masked values.
+
+The thing to know: **`/api/config` can rewrite `TARGET_BASE_URL`**, and anything that can do that can redirect your keys somewhere else. That is why Alvus binds to loopback by default and requires a token for the admin routes on any other bind. Don't expose it to a network you don't trust, and prefer a pinned `ADMIN_TOKEN` if you do.
 
 **What if ALL keys are cooling?**
-Alvus waits for the soonest key to become available and retries, up to 10 times. If everything stays exhausted, it returns `503`. In practice, with 3 keys and a 60s window this is very hard to trigger.
+Alvus waits for the soonest key to become available and retries, up to `MAX_RETRIES` (default 10). If everything stays exhausted, it returns `503`. In practice, with 3 keys and a 60s window this is very hard to trigger. If every key has been *disabled* (401/403), it fails fast instead of waiting — nothing is going to recover.
 
 **Can I reload keys without restarting?**
-Yes! Alvus now supports hot-reloading when the `.env` file changes. Simply edit your `.env` file and Alvus will automatically detect the changes and reload the configuration within 1 second. No restart needed.
+Yes. Alvus hot-reloads when `.env` changes — edit the file and the new config is live within a second. No restart needed. The one exception is `PORT`, which needs a restart to move the listener.
 
 **Does it work on a Raspberry Pi Zero / 32-bit hardware?**
 Yes. Prebuilt binaries include `linux/arm` and `linux/386`. The binary is fully static — no runtime needed.
@@ -370,12 +407,29 @@ Around 2 MB at idle. It's a single static Go binary with no runtime overhead —
 - [x] Hot-reload when .env changes (no restart needed)
 - [x] Per-key request counters and detailed status in `/health`
 - [x] Web dashboard (opt-in, zero-dep binary stays the same)
+- [x] Loopback by default + token-gated admin surface
 
 ---
 
 ## Contributing
 
-PRs welcome. This project is **pure Go stdlib with zero external dependencies** — keep it that way. The core proxy lives in `main.go`; the Claude Code translation layer is isolated in `anthropic.go`. If a feature needs an import beyond stdlib, it doesn't belong here. Open an issue first and we'll figure out the right shape for it.
+PRs welcome. This project is **pure Go stdlib with zero external dependencies** — keep it that way. If a feature needs an import beyond stdlib, it doesn't belong here. Open an issue first and we'll figure out the right shape for it.
+
+There is deliberately **no `go.mod`**: the build is `go build *.go` and every import is stdlib. `//go:embed` works fine in that mode (verified against the Go version CI pins), which is how the dashboard is bundled.
+
+Layout:
+
+| File             | Responsibility                                            |
+| ---------------- | --------------------------------------------------------- |
+| `main.go`        | config, key pool, HTTP surface, the OpenAI pass-through    |
+| `rotate.go`      | shared key-rotation / cooldown / retry loop                |
+| `anthropic.go`   | Anthropic Messages ⇄ OpenAI translation (Claude Code mode) |
+| `auth.go`        | admin token, same-origin checks                           |
+| `env.go`         | `.env` reading and non-destructive writing                 |
+| `dashboard.go`   | embeds `dashboard.html`                                    |
+| `dashboard.html` | the dashboard UI (no external assets — keep it that way)   |
+
+Run `gofmt -w .` and `go vet *.go` before opening a PR; CI checks both.
 
 ---
 
