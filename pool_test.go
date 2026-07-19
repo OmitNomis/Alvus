@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -164,6 +165,44 @@ func TestKeyStatusLabel(t *testing.T) {
 	}
 	if got := p.keyStatusLabel(2, now); got != "disabled" {
 		t.Errorf("key 2: got %q, want \"disabled\"", got)
+	}
+}
+
+func TestPoolIsSafeUnderConcurrentUse(t *testing.T) {
+	// Every in-flight request touches the pool at once, so exercise all of it
+	// together and let -race adjudicate.
+	p := NewKeyPool([]string{"a", "b", "c", "d"})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				idx, _, ok := p.Next()
+				if !ok {
+					continue
+				}
+				p.IncrementRequestCount(idx)
+				switch (worker + j) % 5 {
+				case 0:
+					p.Cooldown(idx, time.Millisecond)
+				case 1:
+					p.Status()
+				case 2:
+					p.GetKeyDetails()
+				case 3:
+					p.TimeUntilAvailable()
+				case 4:
+					p.ActiveCount()
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if n := p.ActiveCount(); n != 4 {
+		t.Errorf("ActiveCount = %d, want 4 — nothing here should disable a key", n)
 	}
 }
 

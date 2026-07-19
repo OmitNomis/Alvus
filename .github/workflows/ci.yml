@@ -5,7 +5,7 @@ on:
   pull_request:
 jobs:
   check:
-    name: Build, vet & format
+    name: Build, vet, test & format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +25,12 @@ jobs:
           fi
       - name: go vet
         run: go vet *.go
+      # The key pool is touched concurrently by every in-flight request, so the
+      # race detector earns its keep here.
+      - name: Test
+        run: go test -race -count=1 *.go
+      # go build ignores _test.go files even in file-list mode, so the glob
+      # stays correct now that tests live alongside the sources.
       - name: Build
         run: go build -o /tmp/alvus *.go
       - name: Smoke test
