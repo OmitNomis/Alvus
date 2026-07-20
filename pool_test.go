@@ -275,6 +275,73 @@ func TestThrottledKeyReportsItsOwnStatus(t *testing.T) {
 	}
 }
 
+// ── Reload ──────────────────────────────────────────────────────────
+
+func TestAdoptStateFromCarriesSurvivingKeys(t *testing.T) {
+	old := NewKeyPool([]string{"a", "b", "c"}, 0)
+	old.Cooldown(0, time.Minute)
+	old.Disable(1)
+	old.IncrementRequestCount(2)
+	old.IncrementRequestCount(2)
+
+	// "b" was removed, "d" is new, and the rest survive the edit.
+	fresh := NewKeyPool([]string{"a", "c", "d"}, 0)
+	fresh.adoptStateFrom(old)
+
+	if fresh.keyStatusLabel(0, time.Now()) == "ready" {
+		t.Error("key \"a\" came back ready — its cooldown was dropped")
+	}
+	if n := fresh.requestsInLastMinute(1); n != 2 {
+		t.Errorf("key \"c\" carried %d requests, want 2", n)
+	}
+	if fresh.disabled[2] || !fresh.lastUsed[2].IsZero() {
+		t.Error("newly added key \"d\" did not start clean")
+	}
+	if n := fresh.ActiveCount(); n != 3 {
+		t.Errorf("ActiveCount = %d — the disabled key was dropped from .env, so nothing should be disabled", n)
+	}
+}
+
+func TestAdoptStateFromKeepsDisabledKeysDisabled(t *testing.T) {
+	old := NewKeyPool([]string{"a", "b"}, 0)
+	old.Disable(0)
+
+	fresh := NewKeyPool([]string{"a", "b"}, 0)
+	fresh.adoptStateFrom(old)
+
+	// The provider revoked this key; editing an unrelated setting in .env is
+	// not a reason to start sending to it again.
+	if !fresh.disabled[0] {
+		t.Error("a revoked key was resurrected by a reload")
+	}
+	if n := fresh.ActiveCount(); n != 1 {
+		t.Errorf("ActiveCount = %d, want 1", n)
+	}
+}
+
+func TestAdoptStateFromHandlesNoPriorPool(t *testing.T) {
+	fresh := NewKeyPool([]string{"a"}, 0)
+	fresh.adoptStateFrom(nil) // first startup
+	if _, _, ok := fresh.Next(); !ok {
+		t.Error("a pool with no predecessor should be immediately usable")
+	}
+}
+
+func TestAdoptStateFromCopiesHistory(t *testing.T) {
+	old := NewKeyPool([]string{"a"}, 0)
+	old.IncrementRequestCount(0)
+
+	fresh := NewKeyPool([]string{"a"}, 0)
+	fresh.adoptStateFrom(old)
+
+	// The two pools must not share a backing array, or later requests against
+	// one would show up in the other.
+	fresh.IncrementRequestCount(0)
+	if n := old.requestsInLastMinute(0); n != 1 {
+		t.Errorf("old pool now reports %d requests, want 1 — history was aliased", n)
+	}
+}
+
 func TestPoolIsSafeUnderConcurrentUse(t *testing.T) {
 	// Every in-flight request touches the pool at once, so exercise all of it
 	// together and let -race adjudicate.

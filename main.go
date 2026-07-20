@@ -275,6 +275,44 @@ func (p *KeyPool) GetKeyDetails() []map[string]interface{} {
 	return details
 }
 
+// adoptStateFrom carries per-key runtime state across a reload for every key
+// that appears in both pools.
+//
+// A reload builds a whole new pool, which used to mean every cooldown, every
+// disabled flag and the entire request history were silently discarded — so
+// saving an unrelated setting from the dashboard made a pool of rate-limited
+// keys look uniformly ready, and the next burst walked straight back into the
+// provider's limit. Keys that are new in this pool start clean.
+func (p *KeyPool) adoptStateFrom(old *KeyPool) {
+	if old == nil {
+		return
+	}
+	// Always old-then-new; the new pool is unpublished at this point, so this
+	// cannot contend with anything.
+	old.mu.Lock()
+	defer old.mu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	prev := make(map[string]int, len(old.keys))
+	for i, k := range old.keys {
+		prev[k] = i
+	}
+	for i, k := range p.keys {
+		j, ok := prev[k]
+		if !ok {
+			continue
+		}
+		p.cooldowns[i] = old.cooldowns[j]
+		p.disabled[i] = old.disabled[j]
+		p.lastUsed[i] = old.lastUsed[j]
+		p.requestHistory[i] = append([]time.Time(nil), old.requestHistory[j]...)
+	}
+	// Keep the round-robin position too, so a reload doesn't dogpile whichever
+	// key happens to sit at index 0.
+	atomic.StoreUint64(&p.counter, atomic.LoadUint64(&old.counter))
+}
+
 // IncrementRequestCount records a request timestamp for a key and updates its lastUsed timestamp
 func (p *KeyPool) IncrementRequestCount(idx int) {
 	p.mu.Lock()
@@ -338,12 +376,19 @@ func loadConfig() (Config, *KeyPool) {
 	return cfg, pool
 }
 
-func reloadConfig() (Config, *KeyPool, error) {
+// reloadConfig re-reads .env and builds a fresh config and pool, carrying the
+// runtime state of any surviving key over from old.
+func reloadConfig(old *KeyPool) (Config, *KeyPool, error) {
 	for _, k := range envKeys {
 		os.Unsetenv(k)
 	}
 	loadDotEnv(".env")
-	return buildConfig()
+	cfg, pool, err := buildConfig()
+	if err != nil {
+		return Config{}, nil, err
+	}
+	pool.adoptStateFrom(old)
+	return cfg, pool, nil
 }
 
 func getenv(key, fallback string) string {
@@ -435,7 +480,8 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 		payload.GenaiBase = strings.TrimSpace(payload.GenaiBase)
 
 		s.mu.RLock()
-		currentKeys := s.pool.keys
+		oldPool := s.pool
+		currentKeys := oldPool.keys
 		s.mu.RUnlock()
 
 		reclaimed := make(map[int]bool)
@@ -485,7 +531,7 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 
 		log.Printf("📝 Configuration updated via API")
 
-		newCfg, newPool, err := reloadConfig()
+		newCfg, newPool, err := reloadConfig(oldPool)
 		if err != nil {
 			log.Printf("⚠️ Immediate reload failed: %v", err)
 			w.WriteHeader(http.StatusAccepted)
@@ -694,7 +740,11 @@ func watchEnvFile(state *ServerState, stop <-chan struct{}) {
 			time.Sleep(100 * time.Millisecond) // debounce
 
 			log.Printf("🔄 .env changed — reloading...")
-			newCfg, newPool, err := reloadConfig()
+			state.mu.RLock()
+			oldPool := state.pool
+			state.mu.RUnlock()
+
+			newCfg, newPool, err := reloadConfig(oldPool)
 			if err != nil {
 				log.Printf("❌ Reload failed: %v", err)
 				continue
