@@ -626,7 +626,6 @@ func (s *ServerState) anthropicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool.IncrementRequestCount(out.idx)
 	logUsage(out.key, out.idx, http.MethodPost, target, resp.StatusCode, len(raw))
 
 	if stream {

@@ -558,7 +558,6 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, resp.Body)
 	}
 
-	pool.IncrementRequestCount(out.idx)
 	logUsage(out.key, out.idx, r.Method, target, resp.StatusCode, len(bodyBytes))
 
 	if resp.StatusCode >= 400 {

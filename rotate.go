@@ -204,6 +204,13 @@ func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotate
 		// it running against a key nobody is waiting on.
 		req = req.WithContext(attemptCtx)
 
+		// Count the request against the key here — at dispatch, once per
+		// attempt. The upstream's rate limit counts what we send, not what
+		// succeeds, so counting only the winning attempt (as the handlers used
+		// to) undercounts every retried request and reports a stream minutes
+		// after it started.
+		pool.IncrementRequestCount(idx)
+
 		resp, err := upstreamClient.Do(req)
 		if err != nil {
 			cancel()
