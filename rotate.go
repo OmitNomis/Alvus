@@ -182,7 +182,7 @@ func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotate
 			if wait < 0 {
 				wait = 0
 			}
-			log.Printf("⏳ %sAll keys cooling — waiting %s (attempt %d/%d)", tag, wait.Round(time.Second), attempt+1, cfg.MaxRetries)
+			log.Printf("⏳ %sNo key free — waiting %s (attempt %d/%d) | %s", tag, wait.Round(time.Second), attempt+1, cfg.MaxRetries, pool.Status())
 			if !sleepCtx(ctx, wait+500*time.Millisecond) {
 				return nil, &rotateError{http.StatusServiceUnavailable, "client went away"}
 			}

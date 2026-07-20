@@ -70,6 +70,7 @@ If it speaks OpenAI-compatible API, it works with Alvus.
 | ---------------------------------- | ----------------------------------------------------------------------------- |
 | 🔑 **Key pool**                    | Multiple keys, one endpoint. Distribute load transparently                    |
 | 🔄 **Round-robin**                 | Even distribution across all healthy keys                                     |
+| ⏳ **Proactive rate pacing**        | Set `RPM_LIMIT` and keys are rested *before* they hit the provider's ceiling  |
 | 🚫 **Silent retry on 429/502/503** | Failed key enters cooldown, request retries instantly with the next           |
 | ⏱️ **Retry-After support**         | Respects upstream `Retry-After` headers — no blind fixed waits                |
 | 🔑 **Auto-disable on 401/403**     | Invalid or revoked keys are permanently removed from the pool                 |
@@ -133,6 +134,10 @@ TARGET_BASE_URL=https://integrate.api.nvidia.com/v1
 
 # Seconds to cool down a key after a 429, 502, or 503 (default: 60)
 COOLDOWN_SEC=60
+
+# Requests per key per minute. Set it to your provider's published limit and
+# Alvus paces each key to stay under it. 0 (default) = no pacing.
+RPM_LIMIT=0
 
 # Attempts before giving up and returning 503 (default: 10)
 MAX_RETRIES=10
@@ -250,6 +255,7 @@ aider --openai-api-base http://localhost:3000/v1 --openai-api-key sk-dummy
 1. Request arrives from your agent or IDE
 2. Body is buffered (needed for retry replay)
 3. Round-robin picks the next available key
+   (skipping any that are cooling, disabled, or at their RPM_LIMIT)
 4. Request forwarded upstream with that key injected
    │
    ├── ✅ 2xx/3xx → request count incremented, headers + body streamed back, done
@@ -260,6 +266,23 @@ aider --openai-api-base http://localhost:3000/v1 --openai-api-key sk-dummy
 ```
 
 Your agent sees a clean stream or a final error. Never a 429.
+
+### Pacing vs. absorbing
+
+By default Alvus is reactive: it finds a key's limit by hitting it, eats the
+429, and rotates. That works, but every 429 is a wasted round trip and some
+providers count refused requests against you.
+
+Set `RPM_LIMIT` to your provider's published per-key limit and Alvus becomes
+proactive — it tracks a rolling 60-second window per key and stops handing out
+a key that has spent its budget, waiting for the oldest request to age out
+instead. With 3 keys at `RPM_LIMIT=40` you get 120 RPM without ever tripping
+the limit. Keys held back this way show as `throttled(Ns)` rather than
+`cooling(Ns)`: nothing went wrong, they are just being paced.
+
+Leave it at `0` if you don't know your provider's limit — the reactive path is
+still there either way, so a limit you set too high just means you fall back to
+absorbing the occasional 429.
 
 Streaming responses carry no deadline — a long agentic turn will not be cut off
 mid-stream. Non-streaming attempts get a 120s per-attempt cap. If your client

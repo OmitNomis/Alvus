@@ -23,6 +23,7 @@ var envKeys = []string{
 	"PORT",
 	"COOLDOWN_SEC",
 	"MAX_RETRIES",
+	"RPM_LIMIT",
 	"OVERRIDE_MODEL",
 	"ADMIN_TOKEN",
 }

@@ -1,13 +1,14 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestNextRoundRobins(t *testing.T) {
-	p := NewKeyPool([]string{"a", "b", "c"})
+	p := NewKeyPool([]string{"a", "b", "c"}, 0)
 
 	var got []string
 	for i := 0; i < 6; i++ {
@@ -32,7 +33,7 @@ func TestNextRoundRobins(t *testing.T) {
 }
 
 func TestCooldownSkipsKey(t *testing.T) {
-	p := NewKeyPool([]string{"a", "b"})
+	p := NewKeyPool([]string{"a", "b"}, 0)
 	p.Cooldown(0, time.Minute)
 
 	for i := 0; i < 4; i++ {
@@ -47,7 +48,7 @@ func TestCooldownSkipsKey(t *testing.T) {
 }
 
 func TestCooldownOnlyExtends(t *testing.T) {
-	p := NewKeyPool([]string{"a"})
+	p := NewKeyPool([]string{"a"}, 0)
 	p.Cooldown(0, time.Minute)
 	first := p.cooldowns[0]
 
@@ -59,7 +60,7 @@ func TestCooldownOnlyExtends(t *testing.T) {
 }
 
 func TestCooldownExpires(t *testing.T) {
-	p := NewKeyPool([]string{"a"})
+	p := NewKeyPool([]string{"a"}, 0)
 	p.Cooldown(0, 30*time.Millisecond)
 
 	if _, _, ok := p.Next(); ok {
@@ -72,7 +73,7 @@ func TestCooldownExpires(t *testing.T) {
 }
 
 func TestDisableRemovesFromPool(t *testing.T) {
-	p := NewKeyPool([]string{"a", "b"})
+	p := NewKeyPool([]string{"a", "b"}, 0)
 	p.Disable(0)
 
 	if n := p.ActiveCount(); n != 1 {
@@ -98,7 +99,7 @@ func TestDisableRemovesFromPool(t *testing.T) {
 }
 
 func TestTimeUntilAvailable(t *testing.T) {
-	p := NewKeyPool([]string{"a", "b"})
+	p := NewKeyPool([]string{"a", "b"}, 0)
 
 	if d := p.TimeUntilAvailable(); d != 0 {
 		t.Errorf("fresh pool: got %v, want 0", d)
@@ -118,7 +119,7 @@ func TestTimeUntilAvailable(t *testing.T) {
 }
 
 func TestTimeUntilAvailableIgnoresDisabled(t *testing.T) {
-	p := NewKeyPool([]string{"a", "b"})
+	p := NewKeyPool([]string{"a", "b"}, 0)
 	p.Cooldown(0, time.Minute)
 	p.Disable(1)
 
@@ -130,7 +131,7 @@ func TestTimeUntilAvailableIgnoresDisabled(t *testing.T) {
 }
 
 func TestRequestsInLastMinute(t *testing.T) {
-	p := NewKeyPool([]string{"a"})
+	p := NewKeyPool([]string{"a"}, 0)
 
 	for i := 0; i < 3; i++ {
 		p.IncrementRequestCount(0)
@@ -152,7 +153,7 @@ func TestRequestsInLastMinute(t *testing.T) {
 }
 
 func TestKeyStatusLabel(t *testing.T) {
-	p := NewKeyPool([]string{"a", "b", "c"})
+	p := NewKeyPool([]string{"a", "b", "c"}, 0)
 	p.Cooldown(1, 30*time.Second)
 	p.Disable(2)
 
@@ -168,10 +169,116 @@ func TestKeyStatusLabel(t *testing.T) {
 	}
 }
 
+// ── Proactive RPM throttling ────────────────────────────────────────
+
+func TestRPMLimitZeroIsOff(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+	for i := 0; i < 500; i++ {
+		p.IncrementRequestCount(0)
+	}
+	if _, _, ok := p.Next(); !ok {
+		t.Error("an unlimited pool withheld a key")
+	}
+}
+
+func TestRPMLimitWithholdsAnExhaustedKey(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 3)
+
+	for i := 0; i < 3; i++ {
+		if _, _, ok := p.Next(); !ok {
+			t.Fatalf("request %d refused while still inside the budget", i)
+		}
+		p.IncrementRequestCount(0)
+	}
+	if _, _, ok := p.Next(); ok {
+		t.Error("key handed out after its per-minute budget was spent")
+	}
+}
+
+func TestRPMLimitSpreadsAcrossKeys(t *testing.T) {
+	// The whole point: with three keys at 2 rpm each, six requests should go
+	// through without a single one being refused.
+	p := NewKeyPool([]string{"a", "b", "c"}, 2)
+
+	counts := map[int]int{}
+	for i := 0; i < 6; i++ {
+		idx, _, ok := p.Next()
+		if !ok {
+			t.Fatalf("request %d refused, but the pool still had budget", i)
+		}
+		p.IncrementRequestCount(idx)
+		counts[idx]++
+	}
+
+	if len(counts) != 3 {
+		t.Errorf("requests landed on %d keys, want all 3: %v", len(counts), counts)
+	}
+	for idx, n := range counts {
+		if n > 2 {
+			t.Errorf("key %d took %d requests, over its limit of 2", idx, n)
+		}
+	}
+
+	// Seventh request has nowhere to go.
+	if _, _, ok := p.Next(); ok {
+		t.Error("a seventh request was allowed past the pool's total budget")
+	}
+}
+
+func TestRPMLimitFreesUpAsRequestsAgeOut(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 2)
+
+	// Two requests, backdated so one is about to leave the window.
+	now := time.Now()
+	p.requestHistory[0] = []time.Time{
+		now.Add(-rpmWindow + 40*time.Millisecond),
+		now.Add(-time.Second),
+	}
+
+	if _, _, ok := p.Next(); ok {
+		t.Fatal("key handed out while at its limit")
+	}
+
+	// TimeUntilAvailable must point at the moment the oldest entry expires,
+	// not at some fixed cooldown.
+	wait := p.TimeUntilAvailable()
+	if wait <= 0 || wait > 200*time.Millisecond {
+		t.Fatalf("TimeUntilAvailable = %v, want just under 40ms", wait)
+	}
+
+	time.Sleep(wait + 20*time.Millisecond)
+	if _, _, ok := p.Next(); !ok {
+		t.Error("key still withheld after a slot should have freed up")
+	}
+}
+
+func TestRPMLimitAndCooldownTakeTheLater(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 1)
+	p.IncrementRequestCount(0) // throttled for ~60s
+	p.Cooldown(0, 5*time.Second)
+
+	// Both apply; the key is not usable until the later of the two.
+	wait := p.TimeUntilAvailable()
+	if wait <= 10*time.Second {
+		t.Errorf("TimeUntilAvailable = %v, want the ~60s throttle to win over the 5s cooldown", wait)
+	}
+}
+
+func TestThrottledKeyReportsItsOwnStatus(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 1)
+	p.IncrementRequestCount(0)
+
+	// "throttled" is not "cooling" — nothing went wrong, we are just pacing.
+	got := p.keyStatusLabel(0, time.Now())
+	if !strings.HasPrefix(got, "throttled(") {
+		t.Errorf("status = %q, want a throttled(...) label", got)
+	}
+}
+
 func TestPoolIsSafeUnderConcurrentUse(t *testing.T) {
 	// Every in-flight request touches the pool at once, so exercise all of it
 	// together and let -race adjudicate.
-	p := NewKeyPool([]string{"a", "b", "c", "d"})
+	p := NewKeyPool([]string{"a", "b", "c", "d"}, 0)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {

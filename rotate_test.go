@@ -67,7 +67,7 @@ func testConfig() Config {
 func TestRotationReturnsFirstGoodResponse(t *testing.T) {
 	u := newUpstreamStub(http.StatusOK)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a", "key-b"})
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
 
 	out, rerr := rotate(t, u, pool, testConfig())
 	if rerr != nil {
@@ -87,7 +87,7 @@ func TestRotationReturnsFirstGoodResponse(t *testing.T) {
 func TestRotationRetriesNextKeyOn429(t *testing.T) {
 	u := newUpstreamStub(http.StatusTooManyRequests, http.StatusOK)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a", "key-b"})
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
 
 	out, rerr := rotate(t, u, pool, testConfig())
 	if rerr != nil {
@@ -119,7 +119,7 @@ func TestRotationRetriesNextKeyOn429(t *testing.T) {
 func TestRotationDisablesKeyOn401(t *testing.T) {
 	u := newUpstreamStub(http.StatusUnauthorized, http.StatusOK)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a", "key-b"})
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
 
 	out, rerr := rotate(t, u, pool, testConfig())
 	if rerr != nil {
@@ -136,7 +136,7 @@ func TestRotationDisablesKeyOn401(t *testing.T) {
 func TestRotationFailsFastWhenEveryKeyIsRevoked(t *testing.T) {
 	u := newUpstreamStub(http.StatusUnauthorized, http.StatusUnauthorized)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a", "key-b"})
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
 
 	start := time.Now()
 	_, rerr := rotate(t, u, pool, Config{MaxRetries: 10, CooldownSec: 60})
@@ -159,7 +159,7 @@ func TestRotationPassesTerminalErrorsThrough(t *testing.T) {
 	// A 400 is the client's problem; retrying on another key cannot help.
 	u := newUpstreamStub(http.StatusBadRequest)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a", "key-b"})
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
 
 	out, rerr := rotate(t, u, pool, testConfig())
 	if rerr != nil {
@@ -179,7 +179,7 @@ func TestRotationPassesTerminalErrorsThrough(t *testing.T) {
 func TestRotationExhaustsRetries(t *testing.T) {
 	u := newUpstreamStub(http.StatusTooManyRequests, http.StatusTooManyRequests, http.StatusTooManyRequests)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a"})
+	pool := NewKeyPool([]string{"key-a"}, 0)
 
 	// One key, cooled on every 429, with a budget of 3 and a cooldown short
 	// enough that the loop keeps trying rather than giving up on the wait.
@@ -195,7 +195,7 @@ func TestRotationExhaustsRetries(t *testing.T) {
 func TestRotationStopsWhenClientGoesAway(t *testing.T) {
 	u := newUpstreamStub(http.StatusTooManyRequests, http.StatusOK)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a"})
+	pool := NewKeyPool([]string{"key-a"}, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // client hung up before we even started
@@ -219,7 +219,7 @@ func TestRotationCountsEveryAttemptNotJustTheWinner(t *testing.T) {
 	// really been sent, so it has to show up against the key that sent it.
 	u := newUpstreamStub(http.StatusTooManyRequests, http.StatusOK)
 	defer u.Close()
-	pool := NewKeyPool([]string{"key-a", "key-b"})
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
 
 	out, rerr := rotate(t, u, pool, testConfig())
 	if rerr != nil {
@@ -237,6 +237,63 @@ func TestRotationCountsEveryAttemptNotJustTheWinner(t *testing.T) {
 
 	if total != 2 {
 		t.Errorf("counted %d requests, want 2 — the 429'd attempt was not recorded", total)
+	}
+}
+
+func TestRPMLimitKeepsUsUnderTheUpstreamCeiling(t *testing.T) {
+	// A provider that allows two requests per key and 429s the third — the
+	// situation RPM_LIMIT exists to avoid walking into.
+	const ceiling = 2
+	var mu sync.Mutex
+	perKey := map[string]int{}
+	refused := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		perKey[key]++
+		over := perKey[key] > ceiling
+		if over {
+			refused++
+		}
+		mu.Unlock()
+
+		if over {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	pool := NewKeyPool([]string{"key-a", "key-b", "key-c"}, ceiling)
+	cfg := Config{MaxRetries: 5, CooldownSec: 60, RPMLimit: ceiling}
+
+	for i := 0; i < len(pool.keys)*ceiling; i++ {
+		out, rerr := withKeyRotation(context.Background(), cfg, pool, rotateOpts{}, "", func(key string) (*http.Request, error) {
+			req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader("{}"))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Authorization", "Bearer "+key)
+			return req, nil
+		})
+		if rerr != nil {
+			t.Fatalf("request %d failed: %v", i, rerr.msg)
+		}
+		out.resp.Body.Close()
+		out.release()
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if refused != 0 {
+		t.Errorf("upstream refused %d requests — the throttle should have paced us under its limit", refused)
+	}
+	for key, n := range perKey {
+		if n > ceiling {
+			t.Errorf("key %s took %d requests, over the upstream ceiling of %d", key, n, ceiling)
+		}
 	}
 }
 

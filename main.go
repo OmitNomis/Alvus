@@ -64,24 +64,77 @@ func logUsage(key string, idx int, method, target string, status, bodySize int) 
 
 // ── Key Pool ──────────────────────────────────
 
+// rpmWindow is the trailing window request rates are measured over. Providers
+// quote their limits per minute, so this is not really tunable.
+const rpmWindow = 60 * time.Second
+
 type KeyPool struct {
 	counter        uint64
 	keys           []string
 	cooldowns      []time.Time
 	disabled       []bool
-	requestHistory [][]time.Time // timestamps of requests in the last 60s per key
+	requestHistory [][]time.Time // timestamps of requests in the last rpmWindow, per key
 	lastUsed       []time.Time
+	rpmLimit       int // requests per key per minute; 0 disables the throttle
 	mu             sync.Mutex
 }
 
-func NewKeyPool(keys []string) *KeyPool {
+func NewKeyPool(keys []string, rpmLimit int) *KeyPool {
 	return &KeyPool{
 		keys:           keys,
 		cooldowns:      make([]time.Time, len(keys)),
 		disabled:       make([]bool, len(keys)),
 		requestHistory: make([][]time.Time, len(keys)),
 		lastUsed:       make([]time.Time, len(keys)),
+		rpmLimit:       rpmLimit,
 	}
+}
+
+// rpmBlockedUntil reports when a key that has spent its per-minute budget will
+// have room again. A zero time means it has room now.
+//
+// requestHistory is appended in order, so the entries still inside the window
+// are a suffix of the slice, and the moment a slot frees is simply when the
+// oldest surplus entry ages out.
+//
+// Caller must hold p.mu.
+func (p *KeyPool) rpmBlockedUntil(idx int, now time.Time) time.Time {
+	if p.rpmLimit <= 0 {
+		return time.Time{}
+	}
+	hist := p.requestHistory[idx]
+	cutoff := now.Add(-rpmWindow)
+
+	first := len(hist)
+	for i, t := range hist {
+		if t.After(cutoff) {
+			first = i
+			break
+		}
+	}
+	inWindow := len(hist) - first
+	if inWindow < p.rpmLimit {
+		return time.Time{}
+	}
+	// Wait for enough of the oldest in-window requests to expire that one slot
+	// opens up.
+	return hist[first+(inWindow-p.rpmLimit)].Add(rpmWindow)
+}
+
+// nextFreeAt reports when key idx is next usable, and whether it will ever be.
+// A zero or past time means it is usable now; ok is false for a disabled key,
+// which is never coming back.
+//
+// Caller must hold p.mu.
+func (p *KeyPool) nextFreeAt(idx int, now time.Time) (time.Time, bool) {
+	if p.disabled[idx] {
+		return time.Time{}, false
+	}
+	free := p.cooldowns[idx]
+	if throttled := p.rpmBlockedUntil(idx, now); throttled.After(free) {
+		free = throttled
+	}
+	return free, true
 }
 
 func (p *KeyPool) TimeUntilAvailable() time.Duration {
@@ -89,14 +142,15 @@ func (p *KeyPool) TimeUntilAvailable() time.Duration {
 	defer p.mu.Unlock()
 	now := time.Now()
 	var soonest time.Duration = -1
-	for i, cd := range p.cooldowns {
-		if p.disabled[i] {
+	for i := range p.keys {
+		free, ok := p.nextFreeAt(i, now)
+		if !ok {
 			continue
 		}
-		if now.After(cd) {
+		if now.After(free) {
 			return 0
 		}
-		if wait := cd.Sub(now); soonest < 0 || wait < soonest {
+		if wait := free.Sub(now); soonest < 0 || wait < soonest {
 			soonest = wait
 		}
 	}
@@ -107,19 +161,23 @@ func (p *KeyPool) Next() (int, string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n := len(p.keys)
-	start := int(atomic.AddUint64(&p.counter, 1)-1) % n
+	// Mask before narrowing: on a 32-bit build a plain int() conversion goes
+	// negative once the counter passes 2^31, and a negative index panics.
+	start := int(atomic.AddUint64(&p.counter, 1)-1&0x7fffffff) % n
+	now := time.Now()
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
-		if !p.disabled[idx] && time.Now().After(p.cooldowns[idx]) {
+		if free, ok := p.nextFreeAt(idx, now); ok && now.After(free) {
 			return idx, p.keys[idx], true
 		}
 	}
 	return -1, "", false
 }
 
-// requestsInLastMinute returns the number of requests made by a key in the last 60 seconds
+// requestsInLastMinute returns the number of requests made by a key in the last
+// rpmWindow.
 func (p *KeyPool) requestsInLastMinute(idx int) int {
-	cutoff := time.Now().Add(-60 * time.Second)
+	cutoff := time.Now().Add(-rpmWindow)
 	count := 0
 	for _, t := range p.requestHistory[idx] {
 		if t.After(cutoff) {
@@ -129,9 +187,9 @@ func (p *KeyPool) requestsInLastMinute(idx int) int {
 	return count
 }
 
-// cleanupOldRequests removes request timestamps older than 60 seconds
+// cleanupOldRequests removes request timestamps that have left the window.
 func (p *KeyPool) cleanupOldRequests(idx int) {
-	cutoff := time.Now().Add(-60 * time.Second)
+	cutoff := time.Now().Add(-rpmWindow)
 	var filtered []time.Time
 	for _, t := range p.requestHistory[idx] {
 		if t.After(cutoff) {
@@ -169,15 +227,18 @@ func (p *KeyPool) ActiveCount() int {
 }
 
 func (p *KeyPool) keyStatusLabel(i int, now time.Time) string {
-	cd := p.cooldowns[i]
-	switch {
-	case p.disabled[i]:
+	if p.disabled[i] {
 		return "disabled"
-	case now.After(cd):
-		return "ready"
-	default:
+	}
+	if cd := p.cooldowns[i]; now.Before(cd) {
 		return fmt.Sprintf("cooling(%.0fs)", cd.Sub(now).Seconds())
 	}
+	// Distinct from cooling: nothing went wrong, we are just pacing the key to
+	// stay under its quota.
+	if t := p.rpmBlockedUntil(i, now); now.Before(t) {
+		return fmt.Sprintf("throttled(%.0fs)", t.Sub(now).Seconds())
+	}
+	return "ready"
 }
 
 func (p *KeyPool) Status() string {
@@ -204,6 +265,7 @@ func (p *KeyPool) GetKeyDetails() []map[string]interface{} {
 			"key":                 maskKey(p.keys[i]),
 			"disabled":            p.disabled[i],
 			"requests_per_minute": p.requestsInLastMinute(i),
+			"rpm_limit":           p.rpmLimit,
 			"last_used":           p.lastUsed[i].Format(time.RFC3339),
 			"cooldown_until":      p.cooldowns[i].Format(time.RFC3339),
 		}
@@ -230,6 +292,7 @@ type Config struct {
 	Port          string
 	MaxRetries    int
 	CooldownSec   int
+	RPMLimit      int
 	OverrideModel string
 }
 
@@ -261,9 +324,10 @@ func buildConfig() (Config, *KeyPool, error) {
 		Port:          getenv("PORT", "3000"),
 		MaxRetries:    getenvInt("MAX_RETRIES", 10),
 		CooldownSec:   getenvInt("COOLDOWN_SEC", 60),
+		RPMLimit:      getenvInt("RPM_LIMIT", 0),
 		OverrideModel: getenv("OVERRIDE_MODEL", ""),
 	}
-	return cfg, NewKeyPool(keys), nil
+	return cfg, NewKeyPool(keys, cfg.RPMLimit), nil
 }
 
 func loadConfig() (Config, *KeyPool) {
