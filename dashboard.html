@@ -373,6 +373,13 @@
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 
+    .btn-sm {
+        margin-top: 0.75rem;
+        width: 100%;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.78rem;
+    }
+
     .btn-outline {
         background: transparent;
         border: 1px solid var(--glass-border);
@@ -649,7 +656,7 @@
 
     function renderTiles(details, logs) {
         const ready = details.filter(k => k.status === 'ready').length;
-        const disabled = details.filter(k => k.status === 'disabled').length;
+        const disabled = details.filter(k => k.disabled).length;
         const cooling = details.length - ready - disabled;
         const rpm = details.reduce((a, k) => a + (k.requests_per_minute || 0), 0);
 
@@ -659,7 +666,7 @@
 
         const bits = [];
         if (cooling) bits.push(cooling + ' cooling');
-        if (disabled) bits.push(disabled + ' disabled');
+        if (disabled) bits.push(disabled + ' quarantined');
         document.getElementById('tileReadySub').textContent = bits.length ? bits.join(', ') : 'all healthy';
 
         document.getElementById('tileRpm').textContent = rpm;
@@ -682,7 +689,7 @@
 
         details.forEach(key => {
             const cooling = key.status.startsWith('cooling');
-            const statusClass = key.status === 'ready' ? 'ready' : (key.status === 'disabled' ? 'disabled' : 'cooling');
+            const statusClass = key.disabled ? 'disabled' : (key.status === 'ready' ? 'ready' : 'cooling');
             const card = el('div', 'card key-card ' + statusClass);
 
             const header = el('div', 'key-header');
@@ -699,8 +706,32 @@
             card.appendChild(header);
 
             card.appendChild(el('div', 'key-val', key.key));
-            card.appendChild(statRow('RPM', key.requests_per_minute));
+            card.appendChild(statRow('RPM', key.requests_per_minute + (key.rpm_limit ? ' / ' + key.rpm_limit : '')));
             card.appendChild(statRow('Last used', fmtTime(key.last_used, 'never')));
+
+            // A quarantined key comes back on its own eventually; this is for
+            // when you have already fixed whatever upset the provider.
+            if (key.disabled) {
+                const revive = el('button', 'btn btn-sm', 'Re-enable now');
+                revive.addEventListener('click', () => {
+                    revive.disabled = true;
+                    fetch('/api/keys/enable', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ index: key.index })
+                    })
+                        .then(res => {
+                            if (!res.ok) throw new Error('HTTP ' + res.status);
+                            toast('Key #' + (key.index + 1) + ' is back in the pool.', 'ok');
+                            updateStatus();
+                        })
+                        .catch(err => {
+                            revive.disabled = false;
+                            toast('Could not re-enable: ' + err.message, 'err');
+                        });
+                });
+                card.appendChild(revive);
+            }
 
             const load = el('div', 'load');
             const fill = el('div', 'load-fill');

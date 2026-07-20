@@ -73,7 +73,7 @@ If it speaks OpenAI-compatible API, it works with Alvus.
 | ⏳ **Proactive rate pacing**        | Set `RPM_LIMIT` and keys are rested *before* they hit the provider's ceiling  |
 | 🚫 **Silent retry on 429/502/503** | Failed key enters cooldown, request retries instantly with the next           |
 | ⏱️ **Retry-After support**         | Respects upstream `Retry-After` headers — no blind fixed waits                |
-| 🔑 **Auto-disable on 401/403**     | Invalid or revoked keys are permanently removed from the pool                 |
+| 🔑 **Quarantine on 401/403**       | Rejected keys are sidelined and re-probed later, backing off if they keep failing |
 | 📡 **Streaming passthrough**       | SSE and chunked responses piped with zero buffering and no timeout ceiling    |
 | ❤️ **Health endpoint**             | `GET /health` shows live key status, cooldown timers, and requests/minute     |
 | 🖥️ **Interactive Dashboard**       | `GET /dashboard` — glassmorphism dark UI, fully offline, zero external assets |
@@ -260,7 +260,7 @@ aider --openai-api-base http://localhost:3000/v1 --openai-api-key sk-dummy
    │
    ├── ✅ 2xx/3xx → request count incremented, headers + body streamed back, done
    ├── ❄️ 429/502/503 → key enters cooldown (honouring Retry-After), retry with next key
-   ├── 🔑 401/403 → key permanently removed from pool
+   ├── 🔑 401/403 → key quarantined, probed again later, retry with next key
    ├── ⚠️ 5xx → retried with backoff (100ms doubling to a 2s cap)
    └── ⚠️ 4xx → terminal, passed through as-is
 ```
@@ -283,6 +283,28 @@ the limit. Keys held back this way show as `throttled(Ns)` rather than
 Leave it at `0` if you don't know your provider's limit — the reactive path is
 still there either way, so a limit you set too high just means you fall back to
 absorbing the occasional 429.
+
+### Rejected keys come back
+
+A `401`/`403` usually means a key is revoked, but several providers also return
+`403` for an exhausted quota — so writing the key off until you restart is too
+strong. Alvus quarantines it instead and probes it again 15 minutes later. If
+that probe works, the key rejoins the pool; if it fails, the wait doubles
+(30m, 1h, 2h, capped at 4h), so a genuinely dead key stops costing you requests
+without ever being permanently written off.
+
+Any answer that isn't an auth rejection counts as recovery — including a `429`,
+which proves the upstream still recognises the key.
+
+If you have already fixed whatever the provider was unhappy about, the
+dashboard shows a **Re-enable now** button on quarantined keys, or:
+
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"index":0}' http://localhost:3000/api/keys/enable
+```
+
+That also forgives the key's accumulated strikes, so its backoff starts over.
 
 Streaming responses carry no deadline — a long agentic turn will not be cut off
 mid-stream. Non-streaming attempts get a 120s per-attempt cap. If your client
@@ -412,7 +434,7 @@ Keys live in `.env` on your machine and are only ever sent to whatever `TARGET_B
 The thing to know: **`/api/config` can rewrite `TARGET_BASE_URL`**, and anything that can do that can redirect your keys somewhere else. That is why Alvus binds to loopback by default and requires a token for the admin routes on any other bind. Don't expose it to a network you don't trust, and prefer a pinned `ADMIN_TOKEN` if you do.
 
 **What if ALL keys are cooling?**
-Alvus waits for the soonest key to become available and retries, up to `MAX_RETRIES` (default 10). If everything stays exhausted, it returns `503`. In practice, with 3 keys and a 60s window this is very hard to trigger. If every key has been *disabled* (401/403), it fails fast instead of waiting — nothing is going to recover.
+Alvus waits for the soonest key to become available and retries, up to `MAX_RETRIES` (default 10). If everything stays exhausted, it returns `503`. In practice, with 3 keys and a 60s window this is very hard to trigger. If every key is *quarantined* (401/403), it fails fast instead of waiting — a quarantine lasts at least 15 minutes, and no request should sit around that long.
 
 **Can I reload keys without restarting?**
 Yes. Alvus hot-reloads when `.env` changes — edit the file and the new config is live within a second. No restart needed. The one exception is `PORT`, which needs a restart to move the listener.

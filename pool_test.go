@@ -164,8 +164,102 @@ func TestKeyStatusLabel(t *testing.T) {
 	if got := p.keyStatusLabel(1, now); got != "cooling(30s)" {
 		t.Errorf("key 1: got %q, want \"cooling(30s)\"", got)
 	}
-	if got := p.keyStatusLabel(2, now); got != "disabled" {
-		t.Errorf("key 2: got %q, want \"disabled\"", got)
+	if got := p.keyStatusLabel(2, now); !strings.HasPrefix(got, "quarantined(") {
+		t.Errorf("key 2: got %q, want a quarantined(...) label", got)
+	}
+}
+
+// ── Quarantine and recovery ─────────────────────────────────────────
+
+func TestQuarantinedKeyIsWithheldUntilItsProbeIsDue(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+	p.Disable(0)
+
+	if _, _, ok := p.Next(); ok {
+		t.Fatal("a freshly quarantined key was handed straight back out")
+	}
+	if n := p.ActiveCount(); n != 0 {
+		t.Errorf("ActiveCount = %d, want 0 while quarantined", n)
+	}
+
+	// Once the wait is up the key gets exactly one chance to prove itself.
+	p.quarantineUntil[0] = time.Now().Add(-time.Second)
+	if _, _, ok := p.Next(); !ok {
+		t.Error("key was not probed after its quarantine expired")
+	}
+	if got := p.keyStatusLabel(0, time.Now()); got != "probing" {
+		t.Errorf("status = %q, want \"probing\"", got)
+	}
+}
+
+func TestMarkHealthyLiftsTheQuarantine(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+	p.Disable(0)
+	p.MarkHealthy(0)
+
+	if n := p.ActiveCount(); n != 1 {
+		t.Errorf("ActiveCount = %d, want 1", n)
+	}
+	if got := p.keyStatusLabel(0, time.Now()); got != "ready" {
+		t.Errorf("status = %q, want \"ready\"", got)
+	}
+}
+
+func TestRepeatOffencesBackOffFurther(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+
+	var prev time.Duration
+	for strike := 1; strike <= 3; strike++ {
+		p.Disable(0)
+		wait := time.Until(p.quarantineUntil[0])
+		if wait <= prev {
+			t.Errorf("strike %d waited %v, not longer than the previous %v", strike, wait, prev)
+		}
+		prev = wait
+		// A successful probe clears the quarantine but not the strike count,
+		// so a flapping key keeps earning longer waits.
+		p.MarkHealthy(0)
+	}
+
+	if prev > quarantineMax {
+		t.Errorf("backoff reached %v, over the %v cap", prev, quarantineMax)
+	}
+}
+
+func TestQuarantineBackoffIsCapped(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+	for i := 0; i < 20; i++ {
+		p.Disable(0)
+	}
+	if wait := time.Until(p.quarantineUntil[0]); wait > quarantineMax {
+		t.Errorf("backoff = %v, over the %v cap", wait, quarantineMax)
+	}
+}
+
+func TestEnableForgivesStrikes(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+	p.Disable(0)
+	p.Disable(0)
+
+	if !p.Enable(0) {
+		t.Fatal("Enable reported failure for a valid index")
+	}
+	if n := p.ActiveCount(); n != 1 {
+		t.Errorf("ActiveCount = %d, want 1", n)
+	}
+	// The operator says it is fixed, so the next failure starts from scratch.
+	p.Disable(0)
+	if wait := time.Until(p.quarantineUntil[0]); wait > quarantineBase+time.Minute {
+		t.Errorf("backoff = %v, want the base %v — strikes should have been forgiven", wait, quarantineBase)
+	}
+}
+
+func TestEnableRejectsAnUnknownIndex(t *testing.T) {
+	p := NewKeyPool([]string{"a"}, 0)
+	for _, idx := range []int{-1, 1, 99} {
+		if p.Enable(idx) {
+			t.Errorf("Enable(%d) succeeded for an out-of-range index", idx)
+		}
 	}
 }
 

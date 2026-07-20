@@ -297,6 +297,70 @@ func TestRPMLimitKeepsUsUnderTheUpstreamCeiling(t *testing.T) {
 	}
 }
 
+func TestSuccessfulProbeReturnsAQuarantinedKeyToThePool(t *testing.T) {
+	// A 403 can mean "quota spent" rather than "revoked", so a key that starts
+	// answering again has to come back without a restart.
+	u := newUpstreamStub(http.StatusForbidden, http.StatusOK)
+	defer u.Close()
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
+
+	out, rerr := rotate(t, u, pool, testConfig())
+	if rerr != nil {
+		t.Fatalf("unexpected error: %v", rerr.msg)
+	}
+	out.resp.Body.Close()
+	out.release()
+
+	if pool.ActiveCount() != 1 {
+		t.Fatalf("ActiveCount = %d, want the 403 key quarantined", pool.ActiveCount())
+	}
+
+	// Fast-forward to when the probe is due, and let it succeed.
+	pool.mu.Lock()
+	for i := range pool.keys {
+		if pool.disabled[i] {
+			pool.quarantineUntil[i] = time.Now().Add(-time.Second)
+		}
+	}
+	pool.mu.Unlock()
+
+	for i := 0; i < 4; i++ {
+		out, rerr := rotate(t, u, pool, testConfig())
+		if rerr != nil {
+			t.Fatalf("probe round %d failed: %v", i, rerr.msg)
+		}
+		out.resp.Body.Close()
+		out.release()
+	}
+
+	if n := pool.ActiveCount(); n != 2 {
+		t.Errorf("ActiveCount = %d, want 2 — the recovered key should be back", n)
+	}
+}
+
+func TestA429DoesNotCountAsAnAuthFailure(t *testing.T) {
+	// A rate limit proves the upstream recognises the key, so it must lift a
+	// quarantine rather than leave the key sidelined.
+	u := newUpstreamStub(http.StatusTooManyRequests, http.StatusOK)
+	defer u.Close()
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
+	pool.Disable(0)
+	pool.mu.Lock()
+	pool.quarantineUntil[0] = time.Now().Add(-time.Second)
+	pool.mu.Unlock()
+
+	out, rerr := rotate(t, u, pool, testConfig())
+	if rerr != nil {
+		t.Fatalf("unexpected error: %v", rerr.msg)
+	}
+	out.resp.Body.Close()
+	out.release()
+
+	if n := pool.ActiveCount(); n != 2 {
+		t.Errorf("ActiveCount = %d, want 2 — a 429 should clear the quarantine", n)
+	}
+}
+
 func TestClassify(t *testing.T) {
 	tests := []struct {
 		status int

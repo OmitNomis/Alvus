@@ -68,25 +68,38 @@ func logUsage(key string, idx int, method, target string, status, bodySize int) 
 // quote their limits per minute, so this is not really tunable.
 const rpmWindow = 60 * time.Second
 
+// Quarantine bounds for a key the upstream rejected with 401/403. That usually
+// means revoked, but several providers also return 403 for an exhausted quota,
+// so writing the key off for the rest of the process is too strong. Probe it
+// again later instead, backing off further each time it fails.
+const (
+	quarantineBase = 15 * time.Minute
+	quarantineMax  = 4 * time.Hour
+)
+
 type KeyPool struct {
-	counter        uint64
-	keys           []string
-	cooldowns      []time.Time
-	disabled       []bool
-	requestHistory [][]time.Time // timestamps of requests in the last rpmWindow, per key
-	lastUsed       []time.Time
-	rpmLimit       int // requests per key per minute; 0 disables the throttle
-	mu             sync.Mutex
+	counter         uint64
+	keys            []string
+	cooldowns       []time.Time
+	disabled        []bool
+	quarantineUntil []time.Time   // when a disabled key earns its next probe
+	strikes         []int         // how many times it has been quarantined
+	requestHistory  [][]time.Time // timestamps of requests in the last rpmWindow, per key
+	lastUsed        []time.Time
+	rpmLimit        int // requests per key per minute; 0 disables the throttle
+	mu              sync.Mutex
 }
 
 func NewKeyPool(keys []string, rpmLimit int) *KeyPool {
 	return &KeyPool{
-		keys:           keys,
-		cooldowns:      make([]time.Time, len(keys)),
-		disabled:       make([]bool, len(keys)),
-		requestHistory: make([][]time.Time, len(keys)),
-		lastUsed:       make([]time.Time, len(keys)),
-		rpmLimit:       rpmLimit,
+		keys:            keys,
+		cooldowns:       make([]time.Time, len(keys)),
+		disabled:        make([]bool, len(keys)),
+		quarantineUntil: make([]time.Time, len(keys)),
+		strikes:         make([]int, len(keys)),
+		requestHistory:  make([][]time.Time, len(keys)),
+		lastUsed:        make([]time.Time, len(keys)),
+		rpmLimit:        rpmLimit,
 	}
 }
 
@@ -127,7 +140,7 @@ func (p *KeyPool) rpmBlockedUntil(idx int, now time.Time) time.Time {
 //
 // Caller must hold p.mu.
 func (p *KeyPool) nextFreeAt(idx int, now time.Time) (time.Time, bool) {
-	if p.disabled[idx] {
+	if p.disabled[idx] && !p.probeDue(idx, now) {
 		return time.Time{}, false
 	}
 	free := p.cooldowns[idx]
@@ -208,10 +221,55 @@ func (p *KeyPool) Cooldown(idx int, d time.Duration) {
 	log.Printf("🧊 Key [%d] on cooldown for %s", idx, d)
 }
 
+// probeDue reports whether a quarantined key has waited long enough to be
+// tried once more. Caller must hold p.mu.
+func (p *KeyPool) probeDue(idx int, now time.Time) bool {
+	return p.disabled[idx] && now.After(p.quarantineUntil[idx])
+}
+
+// Disable quarantines a key the upstream refused to authenticate. Each repeat
+// offence doubles the wait, so a genuinely revoked key quickly stops costing
+// requests while a merely throttled one comes back on its own.
 func (p *KeyPool) Disable(idx int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.disabled[idx] = true
+	p.strikes[idx]++
+
+	backoff := quarantineBase << uint(min(p.strikes[idx]-1, 4))
+	if backoff > quarantineMax {
+		backoff = quarantineMax
+	}
+	p.quarantineUntil[idx] = time.Now().Add(backoff)
+	log.Printf("🔑 Key [%d] quarantined for %s (strike %d)", idx, backoff, p.strikes[idx])
+}
+
+// MarkHealthy clears a quarantine once the key has answered. The strike count
+// is deliberately kept: a key that keeps flapping earns a longer wait each
+// time rather than probing every 15 minutes forever.
+func (p *KeyPool) MarkHealthy(idx int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.disabled[idx] {
+		return
+	}
+	p.disabled[idx] = false
+	p.quarantineUntil[idx] = time.Time{}
+	log.Printf("🔑 Key [%d] is answering again — back in the pool", idx)
+}
+
+// Enable puts a quarantined key back immediately and forgives its strikes.
+// This is the operator saying "I fixed it", so take them at their word.
+func (p *KeyPool) Enable(idx int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if idx < 0 || idx >= len(p.keys) {
+		return false
+	}
+	p.disabled[idx] = false
+	p.quarantineUntil[idx] = time.Time{}
+	p.strikes[idx] = 0
+	return true
 }
 
 func (p *KeyPool) ActiveCount() int {
@@ -228,7 +286,10 @@ func (p *KeyPool) ActiveCount() int {
 
 func (p *KeyPool) keyStatusLabel(i int, now time.Time) string {
 	if p.disabled[i] {
-		return "disabled"
+		if p.probeDue(i, now) {
+			return "probing"
+		}
+		return fmt.Sprintf("quarantined(%.0fm)", p.quarantineUntil[i].Sub(now).Minutes())
 	}
 	if cd := p.cooldowns[i]; now.Before(cd) {
 		return fmt.Sprintf("cooling(%.0fs)", cd.Sub(now).Seconds())
@@ -268,6 +329,7 @@ func (p *KeyPool) GetKeyDetails() []map[string]interface{} {
 			"rpm_limit":           p.rpmLimit,
 			"last_used":           p.lastUsed[i].Format(time.RFC3339),
 			"cooldown_until":      p.cooldowns[i].Format(time.RFC3339),
+			"quarantined_until":   p.quarantineUntil[i].Format(time.RFC3339),
 		}
 		keyDetail["status"] = p.keyStatusLabel(i, now)
 		details[i] = keyDetail
@@ -305,6 +367,8 @@ func (p *KeyPool) adoptStateFrom(old *KeyPool) {
 		}
 		p.cooldowns[i] = old.cooldowns[j]
 		p.disabled[i] = old.disabled[j]
+		p.quarantineUntil[i] = old.quarantineUntil[j]
+		p.strikes[i] = old.strikes[j]
 		p.lastUsed[i] = old.lastUsed[j]
 		p.requestHistory[i] = append([]time.Time(nil), old.requestHistory[j]...)
 	}
@@ -429,6 +493,7 @@ func newServerState(cfg Config, pool *KeyPool, auth *AdminAuth) *ServerState {
 	s.mux.HandleFunc("/dashboard", s.guard(s.dashboardHandler))
 	s.mux.HandleFunc("/clear", s.guardWrite(s.clearHandler))
 	s.mux.HandleFunc("/api/config", s.guardWrite(s.configHandler))
+	s.mux.HandleFunc("/api/keys/enable", s.guardWrite(s.enableKeyHandler))
 	// Requests a browser makes on its own. Without these they fall through to
 	// the catch-all proxy, which spends a pooled key forwarding them upstream
 	// — opening the dashboard was enough to do it.
@@ -560,6 +625,37 @@ func filterEmpty(ss []string) []string {
 		}
 	}
 	return filtered
+}
+
+// enableKeyHandler lifts a quarantine on demand, for when you have fixed
+// whatever the provider was unhappy about and don't want to wait out the
+// backoff.
+func (s *ServerState) enableKeyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		Index int `json:"index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	pool := s.pool
+	s.mu.RUnlock()
+
+	if !pool.Enable(payload.Index) {
+		http.Error(w, "no such key", http.StatusNotFound)
+		return
+	}
+	log.Printf("🔑 Key [%d] re-enabled by hand", payload.Index)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "enabled"})
 }
 
 func (s *ServerState) healthHandler(w http.ResponseWriter, r *http.Request) {

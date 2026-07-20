@@ -103,7 +103,7 @@ type rotateError struct {
 // classify decides what to do with an upstream status.
 //
 //	retry    — cool the key down and try the next one
-//	disable  — the key is bad, drop it from the pool permanently
+//	disable  — the key did not authenticate, quarantine it and probe later
 //	terminal — hand the response back to the caller as-is
 type disposition int
 
@@ -222,7 +222,15 @@ func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotate
 			continue
 		}
 
-		switch classify(resp.StatusCode) {
+		disp := classify(resp.StatusCode)
+		if disp != dispDisable {
+			// Any answer that isn't an auth rejection proves the key still
+			// works — including a 429, which is the upstream counting our
+			// requests against a key it recognises. Lift any quarantine.
+			pool.MarkHealthy(idx)
+		}
+
+		switch disp {
 		case dispRetryCooldown:
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
