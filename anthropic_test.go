@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -687,6 +688,91 @@ func TestStreamWithNoContentStillTerminates(t *testing.T) {
 	want := []string{"message_start", "message_delta", "message_stop"}
 	if got := eventNames(events); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// brokenReader yields some bytes and then fails, standing in for an upstream
+// connection that drops mid-turn.
+type brokenReader struct {
+	data []byte
+	err  error
+}
+
+func (b *brokenReader) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		return 0, b.err
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func TestStreamReportsATruncatedTurnAsAnError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	src := &brokenReader{
+		data: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"half an ans\"}}]}\n\n"),
+		err:  io.ErrUnexpectedEOF,
+	}
+	streamOpenAIToAnthropic(rec, rec, src, "some/model")
+
+	body := rec.Body.String()
+
+	// The client must not be told the turn finished normally.
+	if strings.Contains(body, "message_stop") {
+		t.Error("a broken stream was finished off with message_stop")
+	}
+	if strings.Contains(body, "end_turn") {
+		t.Error("a broken stream reported stop_reason end_turn")
+	}
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("no error event emitted:\n%s", body)
+	}
+
+	// Blocks opened before the break still have to be closed.
+	if got := strings.Count(body, "event: content_block_start"); got != 1 {
+		t.Errorf("content_block_start count = %d, want 1", got)
+	}
+	if got := strings.Count(body, "event: content_block_stop"); got != 1 {
+		t.Errorf("content_block_stop count = %d, want 1 — the open block was left dangling", got)
+	}
+}
+
+func TestStreamCleanEndIsNotAnError(t *testing.T) {
+	// A plain EOF with no [DONE] is how several backends close. That is a
+	// normal end of turn, not a failure.
+	rec := httptest.NewRecorder()
+	src := &brokenReader{
+		data: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"),
+		err:  io.EOF,
+	}
+	streamOpenAIToAnthropic(rec, rec, src, "some/model")
+
+	body := rec.Body.String()
+	if strings.Contains(body, "event: error") {
+		t.Errorf("a clean EOF was reported as an error:\n%s", body)
+	}
+	if !strings.Contains(body, "message_stop") {
+		t.Errorf("no message_stop on a clean end:\n%s", body)
+	}
+}
+
+func TestStreamReportsInputTokens(t *testing.T) {
+	events := runStream(t, strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"hi"}}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7}}`,
+		`data: [DONE]`,
+	}, "\n\n")+"\n\n")
+
+	last := events[len(events)-2]
+	if last.event != "message_delta" {
+		t.Fatalf("expected message_delta, got %s", last.event)
+	}
+	usage := last.data["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(42) {
+		t.Errorf("input_tokens = %v, want 42", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(7) {
+		t.Errorf("output_tokens = %v, want 7", usage["output_tokens"])
 	}
 }
 

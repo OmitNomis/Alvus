@@ -440,8 +440,10 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 	type toolState struct{ anthIndex int }
 	tools := map[int]*toolState{} // OpenAI tool_call index → Anthropic block
 	finish := ""
+	inputTokens := 0
 	outputTokens := 0
 	sawTool := false
+	var streamErr error
 
 	closeText := func() {
 		if textOpen {
@@ -465,6 +467,7 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 					goto next
 				}
 				if chunk.Usage != nil {
+					inputTokens = chunk.Usage.PromptTokens
 					outputTokens = chunk.Usage.CompletionTokens
 				}
 				if len(chunk.Choices) == 0 {
@@ -528,20 +531,36 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 		}
 	next:
 		if err != nil {
+			// io.EOF is the normal end of a stream. Anything else means the
+			// upstream connection broke partway through the turn.
+			if err != io.EOF {
+				streamErr = err
+			}
 			break
 		}
 	}
 
-	// Close whatever block is still open.
+	// Close whatever block is still open, so the document stays well-formed
+	// either way.
 	closeText()
 	for _, st := range tools {
 		writeSSE(w, f, "content_block_stop", map[string]any{"type": "content_block_stop", "index": st.anthIndex})
 	}
 
+	// A stream that died mid-turn used to be finished off with a normal
+	// message_delta/message_stop, so the client accepted a truncated answer as
+	// a complete one. Say what actually happened instead.
+	if streamErr != nil {
+		log.Printf("⚠️ [anthropic] upstream stream broke mid-turn: %v", streamErr)
+		writeSSE(w, f, "error", anthErrorBody("api_error",
+			"upstream stream ended early: "+streamErr.Error()))
+		return
+	}
+
 	writeSSE(w, f, "message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": mapStopReason(finish, sawTool), "stop_sequence": nil},
-		"usage": map[string]any{"output_tokens": outputTokens},
+		"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens},
 	})
 	writeSSE(w, f, "message_stop", map[string]any{"type": "message_stop"})
 }

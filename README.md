@@ -370,7 +370,9 @@ Alternatively, set `OVERRIDE_MODEL` in Alvus's `.env` to force a model regardles
 OVERRIDE_MODEL=deepseek-ai/deepseek-r1
 ```
 
-**Translation covers:** system prompts, multi-turn messages, tool definitions and tool calls (`tool_use` ⇄ `tool_calls`), images, streaming SSE, and `stop_reason` mapping. The zero-dependency, pure-stdlib promise holds — it's all `encoding/json`.
+**Translation covers:** system prompts, multi-turn messages, tool definitions and tool calls (`tool_use` ⇄ `tool_calls`), images, streaming SSE, token usage, and `stop_reason` mapping. The zero-dependency, pure-stdlib promise holds — it's all `encoding/json`.
+
+If an upstream stream breaks partway through a turn, Alvus emits an Anthropic `error` event rather than closing the turn off with a normal `message_stop` — a truncated answer is reported as truncated instead of passing for a complete one.
 
 > ⚠️ **Expectation check.** Claude Code is tuned hard for Claude models. Driving it on other models through a translation shim works, but tool-use reliability and edit formatting can be rough depending on the backend. Treat this as "it runs," not "it replaces your Claude subscription."
 
