@@ -24,6 +24,7 @@ var envKeys = []string{
 	"COOLDOWN_SEC",
 	"MAX_RETRIES",
 	"RPM_LIMIT",
+	"MAX_BODY_MB",
 	"OVERRIDE_MODEL",
 	"ADMIN_TOKEN",
 }

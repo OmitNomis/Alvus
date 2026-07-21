@@ -574,9 +574,13 @@ func (s *ServerState) anthropicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(r.Body)
-	r.Body.Close()
+	raw, err := readLimitedBody(w, r, cfg.maxBodyBytes())
 	if err != nil {
+		if bodyTooLarge(err) {
+			anthErr(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+				fmt.Sprintf("request body over the %d MB limit", cfg.MaxBodyMB))
+			return
+		}
 		anthErr(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
 	}
@@ -655,8 +659,11 @@ func (s *ServerState) anthropicHandler(w http.ResponseWriter, r *http.Request) {
 // pre-flight token check doesn't error. We don't proxy this upstream because
 // OpenAI-compatible backends have no equivalent endpoint.
 func (s *ServerState) anthropicCountTokensHandler(w http.ResponseWriter, r *http.Request) {
-	raw, _ := io.ReadAll(r.Body)
-	r.Body.Close()
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+
+	raw, _ := readLimitedBody(w, r, cfg.maxBodyBytes())
 	// ~4 chars per token is the usual ballpark.
 	est := len(raw) / 4
 	w.Header().Set("Content-Type", "application/json")

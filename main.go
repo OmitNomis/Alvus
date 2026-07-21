@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -395,7 +396,30 @@ type Config struct {
 	MaxRetries    int
 	CooldownSec   int
 	RPMLimit      int
+	MaxBodyMB     int
 	OverrideModel string
+}
+
+// maxBodyBytes is the ceiling for a buffered request body.
+func (c Config) maxBodyBytes() int64 { return int64(c.MaxBodyMB) << 20 }
+
+// readLimitedBody buffers a request body, refusing anything past the ceiling.
+//
+// Both entry points have to hold the whole body in memory so a retry can
+// replay it against the next key, so an unbounded read is an unbounded
+// allocation — one large upload on a --network-only bind is enough.
+func readLimitedBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
+	}
+	defer r.Body.Close()
+	return io.ReadAll(http.MaxBytesReader(w, r.Body, max))
+}
+
+// bodyTooLarge distinguishes "you sent too much" from a read that failed.
+func bodyTooLarge(err error) bool {
+	var mbe *http.MaxBytesError
+	return errors.As(err, &mbe)
 }
 
 func parseKeysFromEnv() ([]string, error) {
@@ -427,6 +451,7 @@ func buildConfig() (Config, *KeyPool, error) {
 		MaxRetries:    getenvInt("MAX_RETRIES", 10),
 		CooldownSec:   getenvInt("COOLDOWN_SEC", 60),
 		RPMLimit:      getenvInt("RPM_LIMIT", 0),
+		MaxBodyMB:     getenvInt("MAX_BODY_MB", 32),
 		OverrideModel: getenv("OVERRIDE_MODEL", ""),
 	}
 	return cfg, NewKeyPool(keys, cfg.RPMLimit), nil
@@ -678,15 +703,14 @@ func (s *ServerState) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	pool := s.pool
 	s.mu.RUnlock()
 
-	var bodyBytes []byte
-	if r.Body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
-		r.Body.Close()
-		if err != nil {
-			http.Error(w, "failed to read request body", http.StatusBadRequest)
+	bodyBytes, err := readLimitedBody(w, r, cfg.maxBodyBytes())
+	if err != nil {
+		if bodyTooLarge(err) {
+			http.Error(w, fmt.Sprintf("alvus: request body over the %d MB limit", cfg.MaxBodyMB), http.StatusRequestEntityTooLarge)
 			return
 		}
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
 	}
 
 	// Route /genai/ paths to GenaiBase, everything else to TargetBase
@@ -885,7 +909,17 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	server := &http.Server{Addr: host + ":" + cfg.Port, Handler: state.mux}
+	server := &http.Server{
+		Addr:    host + ":" + cfg.Port,
+		Handler: state.mux,
+		// Only the header deadline is safe to set here. ReadTimeout would cap
+		// how long a client has to upload a large body, and WriteTimeout would
+		// cut off exactly the long SSE streams this proxy exists to carry —
+		// the same trap the upstream client avoids. This bounds a connection
+		// that opens and then never sends a complete request line.
+		ReadHeaderTimeout: 20 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	go func() {
 		<-sigCh

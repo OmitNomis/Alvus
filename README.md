@@ -142,6 +142,10 @@ RPM_LIMIT=0
 # Attempts before giving up and returning 503 (default: 10)
 MAX_RETRIES=10
 
+# Largest request body accepted, in MB. Bodies are buffered in memory so a
+# retry can replay them, so this is a real memory ceiling. (default: 32)
+MAX_BODY_MB=32
+
 # Guards /dashboard, /logs, /clear and /api/config. Only consulted when
 # bound to a non-loopback address; see "Access & the admin surface".
 ADMIN_TOKEN=
