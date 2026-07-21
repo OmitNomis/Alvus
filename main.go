@@ -443,9 +443,7 @@ func loadConfig() (Config, *KeyPool) {
 // reloadConfig re-reads .env and builds a fresh config and pool, carrying the
 // runtime state of any surviving key over from old.
 func reloadConfig(old *KeyPool) (Config, *KeyPool, error) {
-	for _, k := range envKeys {
-		os.Unsetenv(k)
-	}
+	resetEnvToBaseline()
 	loadDotEnv(".env")
 	cfg, pool, err := buildConfig()
 	if err != nil {
@@ -872,6 +870,9 @@ func main() {
 		host = "127.0.0.1"
 	}
 
+	// Record the real environment before .env can pollute it, so reloads can
+	// tell the two apart.
+	snapshotEnv()
 	loadDotEnv(".env")
 	cfg, pool := loadConfig()
 	auth := newAdminAuth(host, os.Getenv("ADMIN_TOKEN"))

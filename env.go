@@ -28,6 +28,38 @@ var envKeys = []string{
 	"ADMIN_TOKEN",
 }
 
+// baseEnv holds the values of envKeys as they were in the real process
+// environment at startup, before .env was ever read.
+var baseEnv map[string]string
+
+// snapshotEnv records the real environment. Call once, before the first
+// loadDotEnv, or everything .env sets will be mistaken for it.
+func snapshotEnv() {
+	baseEnv = make(map[string]string, len(envKeys))
+	for _, k := range envKeys {
+		if v, ok := os.LookupEnv(k); ok {
+			baseEnv[k] = v
+		}
+	}
+}
+
+// resetEnvToBaseline undoes everything .env has put into the environment,
+// restoring what the operator actually set.
+//
+// A reload used to just unset every key in envKeys before re-reading the file.
+// That does make removed lines take effect, but it also destroys the variables
+// systemd or Docker supplied — so "real environment variables take precedence
+// over .env" held only until the first reload, after which .env silently won.
+func resetEnvToBaseline() {
+	for _, k := range envKeys {
+		if v, ok := baseEnv[k]; ok {
+			os.Setenv(k, v)
+			continue
+		}
+		os.Unsetenv(k)
+	}
+}
+
 func loadDotEnv(filename string) {
 	data, err := os.ReadFile(filename)
 	if err != nil {

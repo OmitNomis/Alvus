@@ -65,6 +65,71 @@ func TestLoadDotEnvDoesNotOverrideRealEnv(t *testing.T) {
 	}
 }
 
+// reload mimics what reloadConfig does to the environment, against an
+// arbitrary .env path.
+func reloadEnv(path string) {
+	resetEnvToBaseline()
+	loadDotEnv(path)
+}
+
+func TestReloadKeepsTheRealEnvironmentWinning(t *testing.T) {
+	// systemd or Docker supplied this; .env must never override it, not even
+	// after a reload.
+	t.Setenv("API_KEYS", "from-environment")
+	snapshotEnv()
+
+	path := writeEnv(t, "API_KEYS=from-file\n")
+	loadDotEnv(path)
+	if got := os.Getenv("API_KEYS"); got != "from-environment" {
+		t.Fatalf("after first load: %q", got)
+	}
+
+	for i := 0; i < 3; i++ {
+		reloadEnv(path)
+		if got := os.Getenv("API_KEYS"); got != "from-environment" {
+			t.Fatalf("after reload %d: API_KEYS = %q, want the real environment to still win", i, got)
+		}
+	}
+}
+
+func TestReloadAppliesValuesRemovedFromTheFile(t *testing.T) {
+	os.Unsetenv("OVERRIDE_MODEL")
+	snapshotEnv()
+
+	path := writeEnv(t, "API_KEYS=one\nOVERRIDE_MODEL=some/model\n")
+	loadDotEnv(path)
+	if got := os.Getenv("OVERRIDE_MODEL"); got != "some/model" {
+		t.Fatalf("OVERRIDE_MODEL = %q", got)
+	}
+
+	// Drop the line and reload: it has to actually disappear, not linger.
+	if err := os.WriteFile(path, []byte("API_KEYS=one\n"), 0600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	reloadEnv(path)
+
+	if got := os.Getenv("OVERRIDE_MODEL"); got != "" {
+		t.Errorf("OVERRIDE_MODEL = %q, want it gone once removed from .env", got)
+	}
+}
+
+func TestReloadPicksUpEditedValues(t *testing.T) {
+	os.Unsetenv("API_KEYS")
+	snapshotEnv()
+
+	path := writeEnv(t, "API_KEYS=one\n")
+	loadDotEnv(path)
+
+	if err := os.WriteFile(path, []byte("API_KEYS=one,two\n"), 0600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	reloadEnv(path)
+
+	if got := os.Getenv("API_KEYS"); got != "one,two" {
+		t.Errorf("API_KEYS = %q, want the edited value", got)
+	}
+}
+
 func TestUpdateDotEnvPreservesEverythingElse(t *testing.T) {
 	path := writeEnv(t, strings.Join([]string{
 		"# Alvus configuration",
