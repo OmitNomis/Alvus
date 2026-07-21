@@ -6,8 +6,24 @@ on:
 permissions:
   contents: write
 jobs:
+  # Tagging used to publish binaries for seven platforms without running
+  # anything first. Gate the whole release on the same checks CI runs.
+  verify:
+    name: Vet & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+      - name: go vet
+        run: go vet *.go
+      - name: Test
+        run: go test -race -count=1 *.go
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
     runs-on: ubuntu-latest
     strategy:
       matrix:

@@ -146,8 +146,9 @@ MAX_RETRIES=10
 # retry can replay them, so this is a real memory ceiling. (default: 32)
 MAX_BODY_MB=32
 
-# Guards /dashboard, /logs, /clear and /api/config. Only consulted when
-# bound to a non-loopback address; see "Access & the admin surface".
+# Guards the admin routes (/dashboard, /logs, /clear, /api/config,
+# /api/keys/enable). Only consulted when bound to a non-loopback address;
+# see "Access & the admin surface".
 ADMIN_TOKEN=
 ```
 
@@ -179,11 +180,11 @@ deliberate opt-in rather than the default:
 - `--local` — bind `127.0.0.1`. This is the default; the flag is kept for compatibility.
 - `--network-only` — bind `0.0.0.0`, reachable over the LAN.
 
-`/dashboard`, `/logs`, `/clear` and `/api/config` expose masked keys and can
-rewrite your configuration. On a loopback bind they are open — that is the same
-trust boundary as the `.env` file sitting next to the binary. On a
-**non-loopback** bind they require a token. Set `ADMIN_TOKEN` to pin one, or
-Alvus generates one and logs it at startup:
+`/dashboard`, `/logs`, `/clear`, `/api/config` and `/api/keys/enable` expose
+masked keys and can rewrite your configuration. On a loopback bind they are
+open — that is the same trust boundary as the `.env` file sitting next to the
+binary. On a **non-loopback** bind they require a token. Set `ADMIN_TOKEN` to
+pin one, or Alvus generates one and logs it at startup:
 
 ```bash
 ./alvus --network-only
@@ -330,23 +331,45 @@ curl http://localhost:3000/health
   "details": [
     {
       "index": 0,
-      "key": "nvapi-xxxxxxxxxxxx",
+      "key": "nvapi-xx...wxyz",
       "status": "ready",
+      "disabled": false,
       "requests_per_minute": 15,
-      "last_used": "2023-11-15T14:30:00Z",
-      "cooldown_until": "2023-11-15T14:29:00Z"
+      "rpm_limit": 40,
+      "last_used": "2026-07-21T14:30:00Z",
+      "cooldown_until": "2026-07-21T14:29:00Z",
+      "quarantined_until": "0001-01-01T00:00:00Z"
     },
     {
       "index": 1,
-      "key": "nvapi-yyyyyyyyyyyy",
-      "status": "cooling(42s)",
+      "key": "nvapi-yy...wxyz",
+      "status": "throttled(18s)",
+      "disabled": false,
       "requests_per_minute": 40,
-      "last_used": "2023-11-15T14:31:00Z",
-      "cooldown_until": "2023-11-15T14:32:00Z"
+      "rpm_limit": 40,
+      "last_used": "2026-07-21T14:31:00Z",
+      "cooldown_until": "0001-01-01T00:00:00Z",
+      "quarantined_until": "0001-01-01T00:00:00Z"
+    },
+    {
+      "index": 2,
+      "key": "nvapi-zz...wxyz",
+      "status": "quarantined(12m)",
+      "disabled": true,
+      "requests_per_minute": 0,
+      "rpm_limit": 40,
+      "last_used": "2026-07-21T14:19:00Z",
+      "cooldown_until": "0001-01-01T00:00:00Z",
+      "quarantined_until": "2026-07-21T14:46:00Z"
     }
   ]
 }
 ```
+
+`status` is one of `ready`, `cooling(Ns)` (rested after a 429), `throttled(Ns)`
+(paced under `RPM_LIMIT` — nothing went wrong), `quarantined(Nm)` (rejected with
+401/403, awaiting its next probe) or `probing` (quarantined and due a retry).
+Zero timestamps mean "never" / "not applicable".
 
 ---
 
@@ -459,6 +482,10 @@ Around 2 MB at idle. It's a single static Go binary with no runtime overhead —
 - [x] Per-key request counters and detailed status in `/health`
 - [x] Web dashboard (opt-in, zero-dep binary stays the same)
 - [x] Loopback by default + token-gated admin surface
+- [x] Proactive rate pacing (`RPM_LIMIT`) instead of waiting for a 429
+- [x] Quarantine and auto-recovery for rejected keys, with manual re-enable
+- [ ] Surface `reasoning_content` from reasoning models as Anthropic `thinking` blocks
+- [ ] Split `/health` so per-key detail is gated on non-loopback binds
 
 ---
 
@@ -466,7 +493,7 @@ Around 2 MB at idle. It's a single static Go binary with no runtime overhead —
 
 PRs welcome. This project is **pure Go stdlib with zero external dependencies** — keep it that way. If a feature needs an import beyond stdlib, it doesn't belong here. Open an issue first and we'll figure out the right shape for it.
 
-There is deliberately **no `go.mod`**: the build is `go build *.go` and every import is stdlib. `//go:embed` works fine in that mode (verified against the Go version CI pins), which is how the dashboard is bundled.
+There is deliberately **no `go.mod`**: the build is `go build *.go` and every import is stdlib. `//go:embed` works fine in that mode (verified against the Go version CI pins), which is how the dashboard is bundled. Tests work in that mode too — `go test *.go` — and `go build` ignores `_test.go` files even when the glob picks them up, so the build line needs no special casing.
 
 Layout:
 
@@ -479,8 +506,9 @@ Layout:
 | `env.go`         | `.env` reading and non-destructive writing                 |
 | `dashboard.go`   | embeds `dashboard.html`                                    |
 | `dashboard.html` | the dashboard UI (no external assets — keep it that way)   |
+| `*_test.go`      | tests — run with `go test *.go`                            |
 
-Run `gofmt -w .` and `go vet *.go` before opening a PR; CI checks both.
+Run `gofmt -w .`, `go vet *.go` and `go test *.go` before opening a PR; CI checks all three (tests under `-race`).
 
 ---
 
