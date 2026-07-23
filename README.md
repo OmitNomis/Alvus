@@ -371,6 +371,13 @@ curl http://localhost:3000/health
 401/403, awaiting its next probe) or `probing` (quarantined and due a retry).
 Zero timestamps mean "never" / "not applicable".
 
+The `details` array is operational intelligence, so it follows the same trust
+boundary as the rest of the admin surface. On a loopback bind you always get it.
+On a `--network-only` bind, only a caller presenting the admin token does — an
+unauthenticated request gets the bare `{"status":"ok","keys":N}` liveness
+summary, which is all a load balancer needs anyway. The route itself is never
+token-gated, so a health check never breaks.
+
 ---
 
 ## Claude Code (experimental)
@@ -393,7 +400,7 @@ Alternatively, set `OVERRIDE_MODEL` in Alvus's `.env` to force a model regardles
 OVERRIDE_MODEL=deepseek-ai/deepseek-r1
 ```
 
-**Translation covers:** system prompts, multi-turn messages, tool definitions and tool calls (`tool_use` ⇄ `tool_calls`), images, streaming SSE, token usage, and `stop_reason` mapping. The zero-dependency, pure-stdlib promise holds — it's all `encoding/json`.
+**Translation covers:** system prompts, multi-turn messages, tool definitions and tool calls (`tool_use` ⇄ `tool_calls`), images, reasoning output (a reasoning model's `reasoning_content` becomes an Anthropic `thinking` block), streaming SSE, token usage, and `stop_reason` mapping. The zero-dependency, pure-stdlib promise holds — it's all `encoding/json`.
 
 If an upstream stream breaks partway through a turn, Alvus emits an Anthropic `error` event rather than closing the turn off with a normal `message_stop` — a truncated answer is reported as truncated instead of passing for a complete one.
 
@@ -484,8 +491,8 @@ Around 2 MB at idle. It's a single static Go binary with no runtime overhead —
 - [x] Loopback by default + token-gated admin surface
 - [x] Proactive rate pacing (`RPM_LIMIT`) instead of waiting for a 429
 - [x] Quarantine and auto-recovery for rejected keys, with manual re-enable
-- [ ] Surface `reasoning_content` from reasoning models as Anthropic `thinking` blocks
-- [ ] Split `/health` so per-key detail is gated on non-loopback binds
+- [x] Surface `reasoning_content` from reasoning models as Anthropic `thinking` blocks
+- [x] Split `/health` so per-key detail is gated on non-loopback binds
 
 ---
 
