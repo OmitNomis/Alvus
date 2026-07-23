@@ -464,6 +464,32 @@ func TestTranslateResponseGarbage(t *testing.T) {
 	}
 }
 
+func TestTranslateResponseReasoningBecomesThinking(t *testing.T) {
+	got := translateOpenAIResponse([]byte(`{
+		"choices":[{"message":{
+			"reasoning_content":"let me think about this",
+			"content":"the answer is 4"
+		},"finish_reason":"stop"}]
+	}`), "m")
+
+	var msg map[string]any
+	json.Unmarshal(got, &msg)
+
+	content := msg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %v, want a thinking block then a text block", content)
+	}
+	// Reasoning leads, mirroring how the model produced it.
+	think := content[0].(map[string]any)
+	if think["type"] != "thinking" || think["thinking"] != "let me think about this" {
+		t.Errorf("thinking block = %v", think)
+	}
+	text := content[1].(map[string]any)
+	if text["type"] != "text" || text["text"] != "the answer is 4" {
+		t.Errorf("text block = %v", text)
+	}
+}
+
 func TestMapStopReason(t *testing.T) {
 	tests := []struct {
 		finish  string
@@ -654,6 +680,57 @@ func TestStreamTextThenToolClosesTextBlockFirst(t *testing.T) {
 	}
 	if len(open) != 4 {
 		t.Errorf("block events = %v, want start/stop for both text and tool", open)
+	}
+}
+
+func TestStreamReasoningBecomesThinkingBlock(t *testing.T) {
+	events := runStream(t, strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}`,
+		`data: {"choices":[{"delta":{"reasoning_content":", let me see"}}]}`,
+		`data: {"choices":[{"delta":{"content":"done"}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n")+"\n\n")
+
+	// The thinking block must open, fill, and close before the text block opens
+	// — Anthropic never allows two open blocks at once.
+	depth := 0
+	var thinking, text strings.Builder
+	firstStartType := ""
+	for _, e := range events {
+		switch e.event {
+		case "content_block_start":
+			depth++
+			if depth > 1 {
+				t.Fatalf("a block opened while one was still open: %v", eventNames(events))
+			}
+			if firstStartType == "" {
+				firstStartType = e.data["content_block"].(map[string]any)["type"].(string)
+			}
+		case "content_block_stop":
+			depth--
+		case "content_block_delta":
+			delta := e.data["delta"].(map[string]any)
+			switch delta["type"] {
+			case "thinking_delta":
+				thinking.WriteString(delta["thinking"].(string))
+			case "text_delta":
+				text.WriteString(delta["text"].(string))
+			}
+		}
+	}
+
+	if depth != 0 {
+		t.Errorf("stream ended with %d block(s) open", depth)
+	}
+	if firstStartType != "thinking" {
+		t.Errorf("first block = %q, want thinking to lead", firstStartType)
+	}
+	if thinking.String() != "hmm, let me see" {
+		t.Errorf("reassembled thinking = %q", thinking.String())
+	}
+	if text.String() != "done" {
+		t.Errorf("reassembled text = %q", text.String())
 	}
 }
 

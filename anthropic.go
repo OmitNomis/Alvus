@@ -333,8 +333,11 @@ type oaiResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Content   string        `json:"content"`
-			ToolCalls []oaiToolCall `json:"tool_calls"`
+			Content string `json:"content"`
+			// Reasoning models (DeepSeek R1 and friends) return their chain of
+			// thought here, alongside the answer in Content.
+			ReasoningContent string        `json:"reasoning_content"`
+			ToolCalls        []oaiToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -354,6 +357,13 @@ func translateOpenAIResponse(raw []byte, model string) []byte {
 	choice := resp.Choices[0]
 
 	var content []map[string]any
+	// A reasoning model's chain of thought leads the answer, mirroring how the
+	// model produced it. We have no cryptographic signature to attach (that is
+	// an Anthropic-model artifact), and none is needed: translateMessage drops
+	// thinking blocks on the way back up, so they are display-only.
+	if choice.Message.ReasoningContent != "" {
+		content = append(content, map[string]any{"type": "thinking", "thinking": choice.Message.ReasoningContent})
+	}
 	if choice.Message.Content != "" {
 		content = append(content, map[string]any{"type": "text", "text": choice.Message.Content})
 	}
@@ -398,8 +408,9 @@ func translateOpenAIResponse(raw []byte, model string) []byte {
 type oaiStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string        `json:"content"`
-			ToolCalls []oaiToolCall `json:"tool_calls"`
+			Content          string        `json:"content"`
+			ReasoningContent string        `json:"reasoning_content"`
+			ToolCalls        []oaiToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -435,6 +446,8 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 	})
 
 	nextIndex := 0
+	thinkingOpen := false
+	thinkingIndex := 0
 	textOpen := false
 	textIndex := 0
 	type toolState struct{ anthIndex int }
@@ -444,6 +457,13 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 	outputTokens := 0
 	sawTool := false
 	var streamErr error
+
+	closeThinking := func() {
+		if thinkingOpen {
+			writeSSE(w, f, "content_block_stop", map[string]any{"type": "content_block_stop", "index": thinkingIndex})
+			thinkingOpen = false
+		}
+	}
 
 	closeText := func() {
 		if textOpen {
@@ -478,7 +498,28 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 					finish = ch.FinishReason
 				}
 
+				// Reasoning tokens stream first, as an Anthropic thinking block.
+				if ch.Delta.ReasoningContent != "" && !textOpen && !sawTool {
+					if !thinkingOpen {
+						thinkingIndex = nextIndex
+						nextIndex++
+						thinkingOpen = true
+						writeSSE(w, f, "content_block_start", map[string]any{
+							"type":          "content_block_start",
+							"index":         thinkingIndex,
+							"content_block": map[string]any{"type": "thinking", "thinking": ""},
+						})
+					}
+					writeSSE(w, f, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": thinkingIndex,
+						"delta": map[string]any{"type": "thinking_delta", "thinking": ch.Delta.ReasoningContent},
+					})
+				}
+
 				if ch.Delta.Content != "" {
+					// The answer supersedes the reasoning: close the thinking block first.
+					closeThinking()
 					if !textOpen {
 						textIndex = nextIndex
 						nextIndex++
@@ -497,6 +538,7 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 				}
 
 				for _, tc := range ch.Delta.ToolCalls {
+					closeThinking()
 					closeText()
 					st, ok := tools[tc.Index]
 					if !ok {
@@ -542,6 +584,7 @@ func streamOpenAIToAnthropic(w http.ResponseWriter, f http.Flusher, body io.Read
 
 	// Close whatever block is still open, so the document stays well-formed
 	// either way.
+	closeThinking()
 	closeText()
 	for _, st := range tools {
 		writeSSE(w, f, "content_block_stop", map[string]any{"type": "content_block_stop", "index": st.anthIndex})
