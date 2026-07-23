@@ -687,6 +687,18 @@ func (s *ServerState) healthHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
 
+	// The per-key detail (masked keys, cooldown timers, request rates) is
+	// operational intelligence about the pool. /health itself can't be
+	// token-gated — load balancers and agents poll it — but on a bind that's
+	// reachable off-box the detail is only handed to a caller holding the admin
+	// token. A loopback bind has no token and shares the .env trust boundary,
+	// so it always gets the full picture; everyone else gets a bare liveness
+	// summary.
+	if s.auth.enabled() && !s.auth.valid(r) {
+		fmt.Fprintf(w, `{"status":"ok","keys":%d}`, len(pool.keys))
+		return
+	}
+
 	details := pool.GetKeyDetails()
 	jsonDetails, err := json.Marshal(details)
 	if err != nil {
