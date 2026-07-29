@@ -3,26 +3,36 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Alvus | Dashboard</title>
+<title>⚡ Alvus — field notes</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>⚡</text></svg>">
 <style>
-    /* System font stack: the dashboard used to pull Inter from Google's CDN,
-       which meant three external requests from a tool whose whole pitch is a
-       zero-dependency binary you can run on a Pi with no internet. */
+    /* Hand-drawn feel with zero downloads: the "marker" face is whatever
+       comic/handwriting font the OS already ships (Comic Sans, Chalkboard,
+       Segoe Print…), never a web font. Still no external requests at all. */
     :root {
-        --bg-color: #0a0a0c;
-        --glass-bg: rgba(255, 255, 255, 0.03);
-        --glass-border: rgba(255, 255, 255, 0.08);
-        --accent-primary: #00d2ff;
-        --accent-secondary: #3a7bd5;
-        --text-main: #e0e0e0;
-        --text-dim: #a0a0a0;
-        --status-ready: #00ff88;
-        --status-cooling: #ffcc00;
-        --status-disabled: #ff4444;
-        --card-blur: 12px;
-        --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                "Helvetica Neue", Arial, sans-serif;
-        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+        /* Field-notes theme: a warm paper notebook instead of dark glass.
+           Same token names on purpose, so the whole page shifts at once. */
+        --bg-color: #f6f1e1;
+        --glass-bg: #fffdf7;
+        --glass-border: #33302b;
+        --line: #c7d4e6;
+        --accent-primary: #2f6fed;
+        --accent-secondary: #17489e;
+        --text-main: #2b2d33;
+        --text-dim: #6f675a;
+        --status-ready: #2f9e44;
+        --status-cooling: #e8912a;
+        --status-disabled: #e03131;
+        --highlight: #ffe08a;
+        --card-blur: 0px;
+        --sketch: #33302b;
+        --shadow: rgba(51, 48, 43, 0.22);
+        /* Uneven corner radii = the classic CSS "drawn by hand" box. */
+        --wobble: 250px 14px 230px 18px / 18px 235px 15px 245px;
+        --wobble-alt: 16px 240px 14px 250px / 240px 16px 235px 15px;
+        --font: "Comic Sans MS", "Comic Neue", "Chalkboard SE", "Segoe Print",
+                "Bradley Hand", "Marker Felt", ui-rounded, system-ui, sans-serif;
+        --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas,
                 "Liberation Mono", monospace;
     }
 
@@ -36,8 +46,12 @@
         font-family: var(--font);
         background: var(--bg-color);
         background-image:
-            radial-gradient(circle at 20% 20%, rgba(0, 210, 255, 0.05) 0%, transparent 40%),
-            radial-gradient(circle at 80% 80%, rgba(58, 123, 213, 0.05) 0%, transparent 40%);
+            /* fine blue graph-paper ruling, drawn entirely in CSS */
+            linear-gradient(var(--line) 1px, transparent 1px),
+            linear-gradient(90deg, var(--line) 1px, transparent 1px),
+            /* a soft page-glow so the paper isn't dead flat */
+            radial-gradient(circle at 50% -10%, rgba(255, 255, 255, 0.65) 0%, transparent 55%);
+        background-size: 26px 26px, 26px 26px, 100% 100%;
         background-attachment: fixed;
         color: var(--text-main);
         min-height: 100vh;
@@ -64,16 +78,38 @@
         flex-wrap: wrap;
     }
 
-    .brand { display: flex; align-items: center; gap: 0.75rem; }
+    .brand { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .brand-title { display: flex; flex-direction: column; gap: 0.1rem; }
+
+    .tagline {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: var(--text-dim);
+        transform: rotate(-1deg);
+        margin-left: 0.2rem;
+    }
 
     .logo {
-        font-size: 1.5rem;
+        position: relative;
+        z-index: 0;
+        font-size: 1.7rem;
         font-weight: 700;
-        letter-spacing: -0.5px;
-        background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
+        letter-spacing: 1px;
+        color: var(--text-main);
+        transform: rotate(-2deg);
+        padding: 0 0.2rem;
+    }
+
+    /* A highlighter stripe swiped behind the wordmark. */
+    .logo::after {
+        content: '';
+        position: absolute;
+        left: -3px; right: -3px; bottom: 3px;
+        height: 44%;
+        z-index: -1;
+        background: var(--highlight);
+        border-radius: 45% 55% 60% 40% / 60% 45% 55% 40%;
+        transform: rotate(-1.5deg);
     }
 
     /* Connection indicator — the old dashboard had no error handling at all,
@@ -83,23 +119,27 @@
         align-items: center;
         gap: 0.4rem;
         font-size: 0.75rem;
+        font-weight: 700;
         color: var(--text-dim);
-        padding: 0.25rem 0.6rem;
-        border: 1px solid var(--glass-border);
-        border-radius: 999px;
+        background: var(--glass-bg);
+        padding: 0.28rem 0.7rem;
+        border: 2px solid var(--sketch);
+        border-radius: 999px 14px 999px 14px / 14px 999px 14px 999px;
         white-space: nowrap;
+        box-shadow: 2px 2px 0 var(--shadow);
     }
 
     .conn-dot {
-        width: 7px; height: 7px;
+        width: 9px; height: 9px;
         border-radius: 50%;
         background: var(--status-ready);
+        border: 1.5px solid var(--sketch);
         flex: none;
     }
 
     .conn.live .conn-dot { animation: pulse 2s ease-in-out infinite; }
     .conn.down .conn-dot { background: var(--status-disabled); animation: none; }
-    .conn.down { color: var(--status-disabled); border-color: rgba(255, 68, 68, 0.3); }
+    .conn.down { color: var(--status-disabled); border-color: var(--status-disabled); }
     .conn.paused .conn-dot { background: var(--text-dim); animation: none; }
 
     @keyframes pulse {
@@ -110,30 +150,36 @@
     /* --- Navigation --- */
     nav {
         display: flex;
-        gap: 0.25rem;
+        gap: 0.4rem;
         background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
+        border: 2px solid var(--sketch);
         padding: 0.4rem;
-        border-radius: 12px;
-        backdrop-filter: blur(var(--card-blur));
+        border-radius: var(--wobble-alt);
+        box-shadow: 3px 3px 0 var(--shadow);
     }
 
     .nav-btn {
         background: transparent;
-        border: none;
+        border: 2px solid transparent;
         color: var(--text-dim);
-        padding: 0.55rem 1.1rem;
-        border-radius: 8px;
+        padding: 0.5rem 1.05rem;
+        border-radius: 140px 8px 130px 10px / 10px 130px 8px 140px;
         cursor: pointer;
-        font-weight: 600;
+        font-weight: 700;
         font-family: inherit;
-        font-size: 0.9rem;
-        transition: color 0.15s, background 0.15s;
+        font-size: 0.92rem;
+        transition: color 0.15s, background 0.15s, transform 0.1s;
     }
 
-    .nav-btn.active { background: rgba(255, 255, 255, 0.1); color: #fff; }
-    .nav-btn:hover:not(.active) { color: #fff; background: rgba(255, 255, 255, 0.05); }
-    .nav-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+    /* Active tab looks marked with a highlighter and pinned at a slant. */
+    .nav-btn.active {
+        background: var(--highlight);
+        border-color: var(--sketch);
+        color: var(--text-main);
+        transform: rotate(-1.5deg);
+    }
+    .nav-btn:hover:not(.active) { color: var(--text-main); background: rgba(51, 48, 43, 0.06); }
+    .nav-btn:focus-visible { outline: 2px dashed var(--accent-primary); outline-offset: 2px; }
 
     /* --- Panels --- */
     .panel { display: none; }
@@ -151,14 +197,14 @@
     /* --- Cards --- */
     .card {
         background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 16px;
+        border: 2px solid var(--sketch);
+        border-radius: var(--wobble);
         padding: 1.5rem;
-        backdrop-filter: blur(var(--card-blur));
         margin-bottom: 1.5rem;
+        box-shadow: 4px 5px 0 var(--shadow);
     }
 
-    h2 { font-size: 1.15rem; color: #fff; }
+    h2 { font-size: 1.2rem; color: var(--text-main); }
 
     /* --- Summary tiles --- */
     .tiles {
@@ -333,76 +379,86 @@
     label {
         display: block;
         margin-bottom: 0.5rem;
-        font-size: 0.9rem;
-        color: var(--text-dim);
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: var(--text-main);
     }
 
-    .hint { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.4rem; opacity: 0.8; }
+    .hint { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.4rem; }
 
-    input[type="text"] {
+    input[type="text"],
+    input[type="number"],
+    input[type="password"],
+    select {
         width: 100%;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid var(--glass-border);
-        border-radius: 8px;
-        padding: 0.75rem;
-        color: #fff;
+        background: #fffef9;
+        border: 2px solid var(--sketch);
+        border-radius: 14px 6px 14px 6px / 6px 14px 6px 14px;
+        padding: 0.7rem 0.8rem;
+        color: var(--text-main);
         font-size: 0.95rem;
         font-family: inherit;
         outline: none;
-        transition: border-color 0.15s;
+        transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    input[type="text"]:focus { border-color: var(--accent-primary); }
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    input[type="password"]:focus,
+    select:focus { border-color: var(--accent-primary); box-shadow: 2px 2px 0 rgba(47, 111, 237, 0.25); }
     #keyInputsContainer input { font-family: var(--mono); font-size: 0.85rem; }
 
     .btn {
-        background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+        background: var(--accent-primary);
         color: #fff;
-        border: none;
-        padding: 0.75rem 1.5rem;
-        border-radius: 8px;
-        font-weight: 600;
+        border: 2px solid var(--sketch);
+        padding: 0.7rem 1.4rem;
+        border-radius: 16px 7px 16px 7px / 7px 16px 7px 16px;
+        font-weight: 700;
         font-family: inherit;
-        font-size: 0.9rem;
+        font-size: 0.95rem;
         cursor: pointer;
-        transition: transform 0.1s, opacity 0.15s;
+        box-shadow: 3px 3px 0 var(--shadow);
+        transition: transform 0.08s, box-shadow 0.08s;
     }
 
-    .btn:hover { opacity: 0.9; }
-    .btn:active { transform: scale(0.98); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+    /* Presses into the page like a real stamp when you click it. */
+    .btn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--shadow); }
+    .btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--shadow); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: 3px 3px 0 var(--shadow); transform: none; }
+    .btn:focus-visible { outline: 2px dashed var(--sketch); outline-offset: 3px; }
 
     .btn-sm {
         margin-top: 0.75rem;
         width: 100%;
         padding: 0.45rem 0.75rem;
-        font-size: 0.78rem;
+        font-size: 0.82rem;
     }
 
     .btn-outline {
-        background: transparent;
-        border: 1px solid var(--glass-border);
+        background: #fffef9;
         color: var(--text-main);
     }
 
-    .btn-outline:hover { background: rgba(255, 255, 255, 0.05); }
+    .btn-outline:hover { background: var(--highlight); }
 
     .key-list-item { display: flex; gap: 10px; margin-bottom: 10px; }
 
     .remove-key-btn {
-        background: rgba(255, 68, 68, 0.1);
-        color: var(--status-disabled);
-        border: 1px solid rgba(255, 68, 68, 0.2);
-        padding: 0.5rem 0.85rem;
-        border-radius: 8px;
+        background: #ffd9d9;
+        color: #a51f1f;
+        border: 2px solid var(--sketch);
+        padding: 0.5rem 0.8rem;
+        border-radius: 12px 5px 12px 5px / 5px 12px 5px 12px;
         cursor: pointer;
-        font-size: 1rem;
+        font-size: 1.1rem;
+        font-weight: 700;
         line-height: 1;
         flex: none;
+        box-shadow: 2px 2px 0 var(--shadow);
     }
 
-    .remove-key-btn:hover { background: rgba(255, 68, 68, 0.2); }
+    .remove-key-btn:hover { background: #ffbcbc; }
 
     /* --- Toolbar --- */
     .toolbar {
@@ -420,29 +476,31 @@
         position: fixed;
         bottom: 1.5rem;
         left: 50%;
-        transform: translate(-50%, 150%);
-        background: #17171b;
-        border: 1px solid var(--glass-border);
+        transform: translate(-50%, 200%);
+        background: var(--glass-bg);
+        border: 2px solid var(--sketch);
         color: var(--text-main);
+        font-weight: 700;
         padding: 0.85rem 1.25rem;
-        border-radius: 10px;
-        font-size: 0.875rem;
-        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+        border-radius: 18px 8px 18px 8px / 8px 18px 8px 18px;
+        font-size: 0.9rem;
+        box-shadow: 4px 5px 0 var(--shadow);
         transition: transform 0.25s ease;
         z-index: 50;
         max-width: calc(100vw - 2rem);
     }
 
     .toast.show { transform: translate(-50%, 0); }
-    .toast.ok { border-color: rgba(0, 255, 136, 0.4); }
-    .toast.err { border-color: rgba(255, 68, 68, 0.5); }
+    .toast.ok { border-left: 7px solid var(--status-ready); }
+    .toast.err { border-left: 7px solid var(--status-disabled); }
 
     footer {
         padding: 2rem;
         text-align: center;
-        font-size: 0.8rem;
+        font-size: 0.85rem;
+        font-weight: 700;
         color: var(--text-dim);
-        border-top: 1px solid var(--glass-border);
+        border-top: 2px dashed var(--sketch);
         margin-top: 2rem;
     }
 
@@ -454,6 +512,11 @@
         .toolbar { flex-direction: column; align-items: stretch; }
         .search-input { max-width: none; }
         .col-url { max-width: 160px; }
+        /* Trim the paper-lift shadows and un-tilt the notes so nothing spills
+           off the side of a narrow phone screen. */
+        .card, .tile { box-shadow: 2px 3px 0 var(--shadow); }
+        .tile { transform: none; }
+        #logs .card { padding: 1rem; }
     }
 </style>
 </head>
@@ -462,7 +525,10 @@
 <div class="container">
     <header>
         <div class="brand">
-            <div class="logo">ALVUS</div>
+            <div class="brand-title">
+                <div class="logo">ALVUS</div>
+                <div class="tagline">field notes for your key pool ✎</div>
+            </div>
             <span class="conn live" id="conn" title="Live connection to the proxy">
                 <span class="conn-dot"></span><span id="connText">live</span>
             </span>
@@ -560,7 +626,7 @@
     </main>
 </div>
 
-<footer>Alvus Multi-Key Proxy</footer>
+<footer>✎ Alvus — a featherweight multi-key proxy</footer>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
