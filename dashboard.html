@@ -210,35 +210,52 @@
     .tiles {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 1rem;
-        margin-bottom: 1.5rem;
+        gap: 1.25rem;
+        margin-bottom: 1.75rem;
     }
 
     .tile {
+        position: relative;
         background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 14px;
-        padding: 1.1rem 1.25rem;
-        backdrop-filter: blur(var(--card-blur));
+        border: 2px solid var(--sketch);
+        border-radius: var(--wobble);
+        padding: 1.25rem 1.25rem 1.1rem;
+        box-shadow: 3px 4px 0 var(--shadow);
+        transform: rotate(-1deg);
     }
+    .tile:nth-child(2n) { transform: rotate(1.2deg); }
+    .tile:nth-child(3n) { transform: rotate(-0.5deg); }
+
+    /* A strip of washi tape pinning each note to the page. */
+    .tile::before {
+        content: '';
+        position: absolute;
+        top: -9px; left: 50%;
+        width: 46px; height: 16px;
+        transform: translateX(-50%) rotate(-4deg);
+        background: rgba(47, 111, 237, 0.22);
+        border: 1px solid rgba(51, 48, 43, 0.25);
+    }
+    .tile:nth-child(2n)::before { background: rgba(232, 145, 42, 0.25); transform: translateX(-50%) rotate(5deg); }
+    .tile:nth-child(3n)::before { background: rgba(47, 158, 68, 0.22); }
 
     .tile-label {
-        font-size: 0.7rem;
+        font-size: 0.72rem;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.05em;
         color: var(--text-dim);
         margin-bottom: 0.4rem;
     }
 
     .tile-val {
-        font-size: 1.6rem;
+        font-size: 1.75rem;
         font-weight: 700;
-        color: #fff;
+        color: var(--text-main);
         line-height: 1.1;
         font-variant-numeric: tabular-nums;
     }
 
-    .tile-sub { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.2rem; }
+    .tile-sub { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.2rem; }
     .tile-val.warn { color: var(--status-cooling); }
     .tile-val.bad { color: var(--status-disabled); }
 
@@ -251,10 +268,12 @@
 
     .key-card { position: relative; overflow: hidden; margin-bottom: 0; }
 
+    /* A fat marker stripe down the edge, colour-coded by status. */
     .key-card::before {
         content: '';
         position: absolute;
-        top: 0; left: 0; width: 4px; height: 100%;
+        top: 8px; bottom: 8px; left: 0; width: 7px;
+        border-radius: 999px;
     }
 
     .key-card.ready::before { background: var(--status-ready); }
@@ -275,20 +294,23 @@
         word-break: break-all;
     }
 
-    .key-index { font-size: 0.75rem; color: var(--text-dim); }
+    .key-index { font-size: 0.8rem; font-weight: 700; color: var(--text-main); }
 
     .badge {
         font-size: 0.7rem;
         text-transform: uppercase;
         font-weight: 700;
-        padding: 0.2rem 0.5rem;
-        border-radius: 4px;
+        padding: 0.22rem 0.55rem;
+        border: 2px solid var(--sketch);
+        border-radius: 12px 5px 12px 5px / 5px 12px 5px 12px;
         font-variant-numeric: tabular-nums;
+        transform: rotate(-2deg);
+        box-shadow: 1.5px 1.5px 0 var(--shadow);
     }
 
-    .badge-ready { background: rgba(0, 255, 136, 0.1); color: var(--status-ready); }
-    .badge-cooling { background: rgba(255, 204, 0, 0.1); color: var(--status-cooling); }
-    .badge-disabled { background: rgba(255, 68, 68, 0.1); color: var(--status-disabled); }
+    .badge-ready { background: #d7f5df; color: #1c6b30; }
+    .badge-cooling { background: #ffe9c7; color: #9a5a10; }
+    .badge-disabled { background: #ffd9d9; color: #a51f1f; }
 
     .stat-row {
         display: flex;
@@ -299,21 +321,25 @@
         gap: 1rem;
     }
 
-    .stat-val { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat-val { color: var(--text-main); font-weight: 700; font-variant-numeric: tabular-nums; }
 
-    /* Load bar: RPM relative to the busiest key. */
+    /* Load bar: RPM relative to the busiest key, drawn like an inked gauge
+       filled with a colour-pencil hatch. */
     .load {
         margin-top: 1rem;
-        height: 4px;
+        height: 10px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.06);
+        background: #efe7d2;
+        border: 2px solid var(--sketch);
         overflow: hidden;
     }
 
     .load-fill {
         height: 100%;
-        border-radius: 999px;
-        background: linear-gradient(to right, var(--accent-primary), var(--accent-secondary));
+        background: repeating-linear-gradient(
+            45deg,
+            var(--accent-primary) 0, var(--accent-primary) 6px,
+            var(--accent-secondary) 6px, var(--accent-secondary) 12px);
         transition: width 0.4s ease;
     }
 
