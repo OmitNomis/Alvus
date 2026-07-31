@@ -351,18 +351,18 @@
     th {
         text-align: left;
         color: var(--text-dim);
-        font-weight: 600;
+        font-weight: 700;
         padding: 0.75rem 1rem;
-        border-bottom: 1px solid var(--glass-border);
+        border-bottom: 2px solid var(--sketch);
         white-space: nowrap;
         font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
 
-    td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--glass-border); color: var(--text-main); }
+    td { padding: 0.7rem 1rem; border-bottom: 1.5px dashed rgba(51, 48, 43, 0.28); color: var(--text-main); }
     tr:last-child td { border-bottom: none; }
-    tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
+    tbody tr:hover td { background: rgba(255, 224, 138, 0.28); }
 
     .col-time { color: var(--text-dim); font-size: 0.8rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .col-size { color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -379,25 +379,28 @@
 
     .status-tag {
         display: inline-block;
-        padding: 0.15rem 0.45rem;
-        border-radius: 4px;
+        padding: 0.1rem 0.5rem;
+        border: 2px solid currentColor;
+        border-radius: 7px 3px 7px 3px / 3px 7px 3px 7px;
         font-weight: 700;
         font-size: 0.75rem;
         font-variant-numeric: tabular-nums;
+        transform: rotate(-3deg);
     }
 
-    .status-tag.ok { background: rgba(0, 255, 136, 0.1); color: var(--status-ready); }
-    .status-tag.err { background: rgba(255, 68, 68, 0.1); color: var(--status-disabled); }
+    .status-tag.ok { color: #1c6b30; background: rgba(47, 158, 68, 0.08); }
+    .status-tag.err { color: #a51f1f; background: rgba(224, 49, 49, 0.08); }
 
     /* --- Empty state --- */
     .empty {
         text-align: center;
         padding: 3rem 1rem;
         color: var(--text-dim);
-        font-size: 0.9rem;
+        font-size: 0.95rem;
+        font-weight: 700;
     }
 
-    .empty-icon { font-size: 1.75rem; display: block; margin-bottom: 0.5rem; opacity: 0.5; }
+    .empty-icon { font-size: 2.5rem; display: block; margin-bottom: 0.5rem; opacity: 0.6; }
 
     /* --- Forms --- */
     .form-group { margin-bottom: 1.5rem; }
