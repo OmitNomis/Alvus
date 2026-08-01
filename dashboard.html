@@ -405,6 +405,33 @@
     /* --- Forms --- */
     .form-group { margin-bottom: 1.5rem; }
 
+    /* Settings is grouped into labelled sections, with a two-up grid for the
+       short numeric knobs so it reads like a filled-in form, not a wall. */
+    .section-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--text-main);
+        margin: 1.75rem 0 0.9rem;
+        padding-bottom: 0.3rem;
+        border-bottom: 2px dashed rgba(51, 48, 43, 0.35);
+    }
+    .section-title:first-of-type { margin-top: 0.5rem; }
+    .restart-note { font-size: 0.72rem; font-weight: 700; color: var(--status-cooling); }
+
+    .form-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 0 1.25rem;
+    }
+
+    code {
+        font-family: var(--mono);
+        font-size: 0.85em;
+        background: rgba(51, 48, 43, 0.08);
+        padding: 0.05rem 0.3rem;
+        border-radius: 4px;
+    }
+
     label {
         display: block;
         margin-bottom: 0.5rem;
@@ -631,8 +658,10 @@
     <!-- Settings -->
     <main id="settings" class="panel">
         <div class="card">
-            <h2 style="margin-bottom: 1.5rem;">System Configuration</h2>
+            <h2 style="margin-bottom: 0.35rem;">Configuration</h2>
+            <p class="hint" style="margin: 0 0 1rem;">Change anything here and hit save — no need to open the <code>.env</code> file on the server.</p>
             <form id="configForm">
+                <h3 class="section-title">Routing</h3>
                 <div class="form-group">
                     <label for="targetBase">Target Base URL</label>
                     <input type="text" id="targetBase" name="targetBase" placeholder="https://integrate.api.nvidia.com/v1" spellcheck="false">
@@ -643,12 +672,57 @@
                     <input type="text" id="genaiBase" name="genaiBase" placeholder="https://ai.api.nvidia.com" spellcheck="false">
                     <div class="hint">Used for <code>/genai/</code> paths.</div>
                 </div>
+
+                <h3 class="section-title">Behaviour</h3>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="cooldownSec">Cooldown (seconds)</label>
+                        <input type="number" id="cooldownSec" name="cooldownSec" min="0" placeholder="60">
+                        <div class="hint">Rest a key this long after a 429 / 502 / 503.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="rpmLimit">RPM limit per key</label>
+                        <input type="number" id="rpmLimit" name="rpmLimit" min="0" placeholder="0">
+                        <div class="hint">Your provider's per-key limit. <code>0</code> = no pacing.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="maxRetries">Max retries</label>
+                        <input type="number" id="maxRetries" name="maxRetries" min="1" placeholder="10">
+                        <div class="hint">Attempts before giving up with a 503.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="maxBodyMB">Max body size (MB)</label>
+                        <input type="number" id="maxBodyMB" name="maxBodyMB" min="1" placeholder="32">
+                        <div class="hint">Largest request body buffered for a retry.</div>
+                    </div>
+                </div>
                 <div class="form-group">
-                    <label>API Keys Pool</label>
+                    <label for="overrideModel">Override model</label>
+                    <input type="text" id="overrideModel" name="overrideModel" placeholder="deepseek-ai/deepseek-r1" spellcheck="false">
+                    <div class="hint">Force this upstream model for every request (handy for Claude Code). Leave blank to pass the client's model through.</div>
+                </div>
+
+                <h3 class="section-title">API Keys</h3>
+                <div class="form-group">
                     <div id="keyInputsContainer"></div>
                     <button type="button" id="addKeyBtn" class="btn btn-outline" style="margin-top: 10px; width: 100%;">+ Add Another Key</button>
                     <div class="hint">Masked keys (<code>nvapi-ab…wxyz</code>) are left untouched when saved. Replace one to change it.</div>
                 </div>
+
+                <h3 class="section-title">Advanced <span class="restart-note">— applied on restart</span></h3>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="port">Port</label>
+                        <input type="number" id="port" name="port" min="1" max="65535" placeholder="3000">
+                        <div class="hint">Moving the listener needs a restart to take effect.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="adminToken">Admin token</label>
+                        <input type="password" id="adminToken" name="adminToken" placeholder="leave blank to keep current" autocomplete="new-password" spellcheck="false">
+                        <div class="hint">Guards the dashboard on a LAN bind. Never shown back, for safety.</div>
+                    </div>
+                </div>
+
                 <button type="submit" class="btn" style="width: 100%;" id="saveBtn">Save &amp; Apply Configuration</button>
             </form>
         </div>
@@ -956,6 +1030,15 @@
             .then(function(data) {
                 document.getElementById('targetBase').value = data.targetBase || '';
                 document.getElementById('genaiBase').value = data.genaiBase || '';
+                // ?? keeps a real 0 (e.g. RPM limit off) instead of blanking it.
+                const setVal = (id, v) => { document.getElementById(id).value = v ?? ''; };
+                setVal('cooldownSec', data.cooldownSec);
+                setVal('rpmLimit', data.rpmLimit);
+                setVal('maxRetries', data.maxRetries);
+                setVal('maxBodyMB', data.maxBodyMB);
+                setVal('overrideModel', data.overrideModel);
+                setVal('port', data.port);
+                // adminToken is intentionally never populated — write-only.
                 const container = document.getElementById('keyInputsContainer');
                 clear(container);
                 if (data.keys && data.keys.length) data.keys.forEach(addKeyInput);
@@ -970,10 +1053,20 @@
         e.preventDefault();
         const btn = document.getElementById('saveBtn');
         const formData = new FormData(e.target);
+        // undefined drops out of JSON.stringify, so a blank number field is
+        // simply omitted and the server leaves that knob as it was.
+        const num = v => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : undefined; };
         const config = {
             targetBase: formData.get('targetBase'),
             genaiBase: formData.get('genaiBase'),
-            keys: formData.getAll('apiKeys[]').filter(k => k.trim() !== '')
+            keys: formData.getAll('apiKeys[]').filter(k => k.trim() !== ''),
+            cooldownSec: num(formData.get('cooldownSec')),
+            rpmLimit: num(formData.get('rpmLimit')),
+            maxRetries: num(formData.get('maxRetries')),
+            maxBodyMB: num(formData.get('maxBodyMB')),
+            overrideModel: formData.get('overrideModel') || '',
+            port: (formData.get('port') || '').trim(),
+            adminToken: formData.get('adminToken') || ''
         };
 
         btn.disabled = true;
