@@ -535,6 +535,17 @@ type ConfigPayload struct {
 	TargetBase string   `json:"targetBase"`
 	GenaiBase  string   `json:"genaiBase"`
 	Keys       []string `json:"keys"`
+	// Optional tuning knobs. Pointers so an omitted field on POST means
+	// "leave it as it is" — older callers that send only the three core
+	// fields keep working untouched. AdminToken is write-only: it is read
+	// from POST but never populated on GET, so the token is never echoed.
+	Port          *string `json:"port,omitempty"`
+	CooldownSec   *int    `json:"cooldownSec,omitempty"`
+	RPMLimit      *int    `json:"rpmLimit,omitempty"`
+	MaxRetries    *int    `json:"maxRetries,omitempty"`
+	MaxBodyMB     *int    `json:"maxBodyMB,omitempty"`
+	OverrideModel *string `json:"overrideModel,omitempty"`
+	AdminToken    *string `json:"adminToken,omitempty"`
 }
 
 func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
@@ -549,10 +560,20 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 		for i, k := range keys {
 			maskedKeys[i] = maskKey(k)
 		}
+		// Local copies so we can hand back addresses; AdminToken stays nil
+		// so the guarding token is never sent to the browser.
+		port, cooldown, rpm := cfg.Port, cfg.CooldownSec, cfg.RPMLimit
+		retries, body, model := cfg.MaxRetries, cfg.MaxBodyMB, cfg.OverrideModel
 		json.NewEncoder(w).Encode(ConfigPayload{
-			TargetBase: cfg.TargetBase,
-			GenaiBase:  cfg.GenaiBase,
-			Keys:       maskedKeys,
+			TargetBase:    cfg.TargetBase,
+			GenaiBase:     cfg.GenaiBase,
+			Keys:          maskedKeys,
+			Port:          &port,
+			CooldownSec:   &cooldown,
+			RPMLimit:      &rpm,
+			MaxRetries:    &retries,
+			MaxBodyMB:     &body,
+			OverrideModel: &model,
 		})
 		return
 	}
@@ -605,13 +626,64 @@ func (s *ServerState) configHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Only touch what the form actually owns. Anything else in the file
-		// (OVERRIDE_MODEL, ADMIN_TOKEN, comments, custom vars) is preserved.
-		if err := updateDotEnv(".env", map[string]string{
+		// Start with what the core form always owns, then layer on whatever
+		// optional knobs the client included. Comments, blank lines and any
+		// variables Alvus doesn't recognise are left untouched by updateDotEnv.
+		updates := map[string]string{
 			"TARGET_BASE_URL": payload.TargetBase,
 			"GENAI_BASE_URL":  payload.GenaiBase,
 			"API_KEYS":        strings.Join(payload.Keys, ","),
-		}); err != nil {
+		}
+		if payload.CooldownSec != nil {
+			if *payload.CooldownSec < 0 {
+				http.Error(w, "cooldownSec must be 0 or greater", http.StatusBadRequest)
+				return
+			}
+			updates["COOLDOWN_SEC"] = strconv.Itoa(*payload.CooldownSec)
+		}
+		if payload.RPMLimit != nil {
+			if *payload.RPMLimit < 0 {
+				http.Error(w, "rpmLimit must be 0 or greater", http.StatusBadRequest)
+				return
+			}
+			updates["RPM_LIMIT"] = strconv.Itoa(*payload.RPMLimit)
+		}
+		if payload.MaxRetries != nil {
+			if *payload.MaxRetries < 1 {
+				http.Error(w, "maxRetries must be at least 1", http.StatusBadRequest)
+				return
+			}
+			updates["MAX_RETRIES"] = strconv.Itoa(*payload.MaxRetries)
+		}
+		if payload.MaxBodyMB != nil {
+			if *payload.MaxBodyMB < 1 {
+				http.Error(w, "maxBodyMB must be at least 1", http.StatusBadRequest)
+				return
+			}
+			updates["MAX_BODY_MB"] = strconv.Itoa(*payload.MaxBodyMB)
+		}
+		if payload.OverrideModel != nil {
+			updates["OVERRIDE_MODEL"] = strings.TrimSpace(*payload.OverrideModel)
+		}
+		if payload.Port != nil {
+			p := strings.TrimSpace(*payload.Port)
+			if p != "" {
+				if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+					http.Error(w, "port must be a number between 1 and 65535", http.StatusBadRequest)
+					return
+				}
+				updates["PORT"] = p
+			}
+		}
+		// Write-only, and only when non-empty, so a blank field keeps the
+		// current token rather than wiping the guard on the admin surface.
+		if payload.AdminToken != nil {
+			if t := strings.TrimSpace(*payload.AdminToken); t != "" {
+				updates["ADMIN_TOKEN"] = t
+			}
+		}
+
+		if err := updateDotEnv(".env", updates); err != nil {
 			log.Printf("❌ Failed to write .env: %v", err)
 			http.Error(w, "failed to save config", http.StatusInternalServerError)
 			return
