@@ -76,9 +76,9 @@ If it speaks OpenAI-compatible API, it works with Alvus.
 | 🔑 **Quarantine on 401/403**       | Rejected keys are sidelined and re-probed later, backing off if they keep failing |
 | 📡 **Streaming passthrough**       | SSE and chunked responses piped with zero buffering and no timeout ceiling    |
 | ❤️ **Health endpoint**             | `GET /health` shows live key status, cooldown timers, and requests/minute     |
-| 🖥️ **Interactive Dashboard**       | `GET /dashboard` — glassmorphism dark UI, fully offline, zero external assets |
+| 🖥️ **Interactive Dashboard**       | `GET /dashboard` — hand-drawn notebook UI, fully offline, zero external assets |
 | ⚡ **Live Activity Logs**          | Searchable, 1000-entry memory cache to track all request activity             |
-| 🔧 **Dynamic Configuration**       | Update keys and base URLs directly from the dashboard; writes to `.env`       |
+| 🔧 **Dynamic Configuration**       | Edit keys, base URLs and every tuning knob from the dashboard; writes to `.env`       |
 | 🔒 **Loopback by default**         | Binds `127.0.0.1`; LAN exposure is opt-in and requires an admin token         |
 | 🤖 **Claude Code mode**            | Translates Anthropic Messages API ⇄ OpenAI so Claude Code runs on any backend |
 | 🪶 **Zero dependencies**           | Pure Go stdlib. One binary                                                    |
