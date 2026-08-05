@@ -24,6 +24,11 @@
         --status-cooling: #e8912a;
         --status-disabled: #e03131;
         --highlight: #ffe08a;
+        --highlight-ink: #2b2d33;
+        --field-bg: #fffef9;
+        --track-bg: #efe7d2;
+        --glow: rgba(255, 255, 255, 0.65);
+        color-scheme: light;
         --card-blur: 0px;
         --sketch: #33302b;
         --shadow: rgba(51, 48, 43, 0.22);
@@ -35,6 +40,39 @@
         --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas,
                 "Liberation Mono", monospace;
     }
+
+    /* Dark "chalkboard" variant: the paper tokens flip to chalk-on-slate,
+       while the sticker/stamp accents stay light on purpose — like paper
+       pinned to a dark board. Toggled via [data-theme]; a tiny <head> script
+       sets it before first paint so there's no flash of light. */
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+        --bg-color: #1b1c21;
+        --glass-bg: #26272e;
+        --glass-border: #d8d4c6;
+        --line: rgba(232, 228, 216, 0.06);
+        --accent-primary: #5b8def;
+        --accent-secondary: #3a63c4;
+        --text-main: #ece8dd;
+        --text-dim: #9c968a;
+        --status-ready: #4ac36a;
+        --status-cooling: #f0a63a;
+        --status-disabled: #ff6b6b;
+        --sketch: #d8d4c6;
+        --shadow: rgba(0, 0, 0, 0.55);
+        --field-bg: #2f3038;
+        --track-bg: #15161b;
+        --glow: rgba(120, 150, 220, 0.10);
+    }
+
+    /* Dark-only touch-ups where a fixed light value would vanish on slate. */
+    :root[data-theme="dark"] .logo::after { height: 30%; }
+    :root[data-theme="dark"] .nav-btn:hover:not(.active) { background: rgba(255, 255, 255, 0.06); }
+    :root[data-theme="dark"] td { border-bottom-color: rgba(232, 228, 216, 0.16); }
+    :root[data-theme="dark"] .section-title { border-bottom-color: rgba(232, 228, 216, 0.3); }
+    :root[data-theme="dark"] code { background: rgba(255, 255, 255, 0.09); }
+    :root[data-theme="dark"] .status-tag.ok { color: #6ee39a; background: rgba(74, 195, 106, 0.12); }
+    :root[data-theme="dark"] .status-tag.err { color: #ff8a8a; background: rgba(255, 107, 107, 0.12); }
 
     * {
         box-sizing: border-box;
@@ -50,7 +88,7 @@
             linear-gradient(var(--line) 1px, transparent 1px),
             linear-gradient(90deg, var(--line) 1px, transparent 1px),
             /* a soft page-glow so the paper isn't dead flat */
-            radial-gradient(circle at 50% -10%, rgba(255, 255, 255, 0.65) 0%, transparent 55%);
+            radial-gradient(circle at 50% -10%, var(--glow) 0%, transparent 55%);
         background-size: 26px 26px, 26px 26px, 100% 100%;
         background-attachment: fixed;
         color: var(--text-main);
@@ -175,11 +213,31 @@
     .nav-btn.active {
         background: var(--highlight);
         border-color: var(--sketch);
-        color: var(--text-main);
+        color: var(--highlight-ink);
         transform: rotate(-1.5deg);
     }
     .nav-btn:hover:not(.active) { color: var(--text-main); background: rgba(51, 48, 43, 0.06); }
     .nav-btn:focus-visible { outline: 2px dashed var(--accent-primary); outline-offset: 2px; }
+
+    .nav-wrap { display: flex; align-items: center; gap: 0.6rem; }
+
+    /* Little sketch button that flips the paper light / the board dark. */
+    .theme-toggle {
+        background: var(--glass-bg);
+        border: 2px solid var(--sketch);
+        color: var(--text-main);
+        font-size: 1.05rem;
+        line-height: 1;
+        padding: 0.4rem 0.6rem;
+        border-radius: 14px 8px 14px 8px / 8px 14px 8px 14px;
+        box-shadow: 2px 2px 0 var(--shadow);
+        cursor: pointer;
+        font-family: inherit;
+        transition: transform 0.08s, box-shadow 0.08s;
+    }
+    .theme-toggle:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--shadow); }
+    .theme-toggle:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
+    .theme-toggle:focus-visible { outline: 2px dashed var(--accent-primary); outline-offset: 3px; }
 
     /* --- Panels --- */
     .panel { display: none; }
@@ -329,7 +387,7 @@
         margin-top: 1rem;
         height: 10px;
         border-radius: 999px;
-        background: #efe7d2;
+        background: var(--track-bg);
         border: 2px solid var(--sketch);
         overflow: hidden;
     }
@@ -447,7 +505,7 @@
     input[type="password"],
     select {
         width: 100%;
-        background: #fffef9;
+        background: var(--field-bg);
         border: 2px solid var(--sketch);
         border-radius: 14px 6px 14px 6px / 6px 14px 6px 14px;
         padding: 0.7rem 0.8rem;
@@ -492,11 +550,11 @@
     }
 
     .btn-outline {
-        background: #fffef9;
+        background: var(--field-bg);
         color: var(--text-main);
     }
 
-    .btn-outline:hover { background: var(--highlight); }
+    .btn-outline:hover { background: var(--highlight); color: var(--highlight-ink); }
 
     .key-list-item { display: flex; gap: 10px; margin-bottom: 10px; }
 
@@ -563,7 +621,8 @@
     @media (max-width: 768px) {
         .container { padding: 1.25rem; }
         header { flex-direction: column; align-items: flex-start; }
-        nav { width: 100%; }
+        .nav-wrap { width: 100%; }
+        nav { flex: 1; }
         .nav-btn { flex: 1; }
         .toolbar { flex-direction: column; align-items: stretch; }
         .search-input { max-width: none; }
@@ -575,6 +634,18 @@
         #logs .card { padding: 1rem; }
     }
 </style>
+<script>
+  /* Set the theme before first paint so dark users don't see a flash of light. */
+  (function () {
+    try {
+      var t = localStorage.getItem('alvus-theme');
+      if (t !== 'dark' && t !== 'light') {
+        t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
 
@@ -589,11 +660,14 @@
                 <span class="conn-dot"></span><span id="connText">live</span>
             </span>
         </div>
-        <nav>
-            <button class="nav-btn active" data-panel="overview">Overview</button>
-            <button class="nav-btn" data-panel="logs">Logs</button>
-            <button class="nav-btn" data-panel="settings">Settings</button>
-        </nav>
+        <div class="nav-wrap">
+            <nav>
+                <button class="nav-btn active" data-panel="overview">Overview</button>
+                <button class="nav-btn" data-panel="logs">Logs</button>
+                <button class="nav-btn" data-panel="settings">Settings</button>
+            </nav>
+            <button class="theme-toggle" id="themeToggle" type="button" title="Toggle theme">🌙</button>
+        </div>
     </header>
 
     <!-- Overview -->
@@ -804,6 +878,37 @@
         toastEl.className = 'toast show ' + (kind || '');
         toastTimer = setTimeout(() => { toastEl.className = 'toast ' + (kind || ''); }, 3200);
     }
+
+    // --- Theme ------------------------------------------------------
+    // A tiny <head> script already set data-theme before first paint to avoid
+    // a flash; here we sync the button and let the user flip it. The choice is
+    // remembered, defaulting to the OS preference on first visit.
+    const themeBtn = document.getElementById('themeToggle');
+
+    function applyTheme(t) {
+        document.documentElement.dataset.theme = t;
+        themeBtn.textContent = t === 'dark' ? '☀️' : '🌙';
+        const label = t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+        themeBtn.title = label;
+        themeBtn.setAttribute('aria-label', label);
+    }
+
+    (function initTheme() {
+        let t = document.documentElement.dataset.theme;
+        if (t !== 'dark' && t !== 'light') {
+            try { t = localStorage.getItem('alvus-theme'); } catch (e) {}
+            if (t !== 'dark' && t !== 'light') {
+                t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+        }
+        applyTheme(t);
+    })();
+
+    themeBtn.addEventListener('click', () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+        try { localStorage.setItem('alvus-theme', next); } catch (e) {}
+    });
 
     // --- Navigation -------------------------------------------------
     const navBtns = document.querySelectorAll('.nav-btn');
