@@ -79,6 +79,9 @@ type rotateOpts struct {
 	// PerAttemptTimeout caps a single attempt end to end, body included. Zero
 	// means no cap, which is what streaming responses need.
 	PerAttemptTimeout time.Duration
+	// Client overrides upstreamClient, for upstreams that need a different
+	// transport (TTS speaks gRPC over HTTP/2). Nil means upstreamClient.
+	Client *http.Client
 }
 
 // rotateResult is a response the caller now owns: it must close resp.Body and
@@ -166,6 +169,10 @@ func backoffFor(attempt int) time.Duration {
 // withKeyRotation runs build against pooled keys until one produces a response
 // worth returning, or the retry budget is spent.
 func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotateOpts, tag string, build buildFunc) (*rotateResult, *rotateError) {
+	client := upstreamClient
+	if opts.Client != nil {
+		client = opts.Client
+	}
 	for attempt := 0; attempt < cfg.MaxRetries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, &rotateError{http.StatusServiceUnavailable, "client went away"}
@@ -211,7 +218,7 @@ func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotate
 		// after it started.
 		pool.IncrementRequestCount(idx)
 
-		resp, err := upstreamClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			cancel()
 			if ctx.Err() != nil {

@@ -392,6 +392,7 @@ func (p *KeyPool) IncrementRequestCount(idx int) {
 type Config struct {
 	TargetBase    string
 	GenaiBase     string
+	TTSBase       string
 	Port          string
 	MaxRetries    int
 	CooldownSec   int
@@ -447,6 +448,7 @@ func buildConfig() (Config, *KeyPool, error) {
 	cfg := Config{
 		TargetBase:    strings.TrimRight(getenv("TARGET_BASE_URL", "https://integrate.api.nvidia.com/v1"), "/"),
 		GenaiBase:     strings.TrimRight(getenv("GENAI_BASE_URL", "https://ai.api.nvidia.com"), "/"),
+		TTSBase:       strings.TrimRight(getenv("TTS_BASE_URL", defaultTTSBase), "/"),
 		Port:          getenv("PORT", "3000"),
 		MaxRetries:    getenvInt("MAX_RETRIES", 10),
 		CooldownSec:   getenvInt("COOLDOWN_SEC", 60),
@@ -510,6 +512,8 @@ func newServerState(cfg Config, pool *KeyPool, auth *AdminAuth) *ServerState {
 	// Claude Code support: Anthropic Messages API translated to OpenAI upstream
 	s.mux.HandleFunc("/v1/messages", s.anthropicHandler)
 	s.mux.HandleFunc("/v1/messages/count_tokens", s.anthropicCountTokensHandler)
+	// Text-to-speech: NVIDIA's speech models are gRPC-only, see tts.go
+	s.mux.HandleFunc("/v1/audio/speech", s.ttsHandler)
 	// Admin surface — exposes masked keys and rewrites config, so it is gated
 	// whenever the listener is reachable from off-box. See auth.go.
 	s.mux.HandleFunc("/logs", s.guard(s.logsHandler))

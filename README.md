@@ -81,6 +81,7 @@ If it speaks OpenAI-compatible API, it works with Alvus.
 | 🔧 **Dynamic Configuration**       | Edit keys, base URLs and every tuning knob from the dashboard; writes to `.env`       |
 | 🔒 **Loopback by default**         | Binds `127.0.0.1`; LAN exposure is opt-in and requires an admin token         |
 | 🤖 **Claude Code mode**            | Translates Anthropic Messages API ⇄ OpenAI so Claude Code runs on any backend |
+| 🗣️ **Text-to-speech**              | `POST /v1/audio/speech` bridges to NVIDIA's gRPC-only Magpie TTS / Chatterbox, returns WAV |
 | 🪶 **Zero dependencies**           | Pure Go stdlib. One binary                                                    |
 | 🔧 **`.env` support**              | Built-in parser — no `godotenv`, no extras                                    |
 | 🖥️ **Runs anywhere**               | linux/amd64, arm64, arm, **386** — including Pi Zero and older x86 hardware   |
@@ -405,6 +406,38 @@ OVERRIDE_MODEL=deepseek-ai/deepseek-r1
 If an upstream stream breaks partway through a turn, Alvus emits an Anthropic `error` event rather than closing the turn off with a normal `message_stop` — a truncated answer is reported as truncated instead of passing for a complete one.
 
 > ⚠️ **Expectation check.** Claude Code is tuned hard for Claude models. Driving it on other models through a translation shim works, but tool-use reliability and edit formatting can be rough depending on the backend. Treat this as "it runs," not "it replaces your Claude subscription."
+
+---
+
+## Text-to-Speech
+
+NVIDIA's hosted speech models (Magpie TTS, Chatterbox) are gRPC-only, so a normal OpenAI-style client can't reach them. Alvus bridges that: `POST /v1/audio/speech` takes JSON, makes the gRPC call with a pooled key, and returns a WAV file. Same rotation, cooldowns and quarantine as everything else — and still pure stdlib, the protobuf is hand-rolled.
+
+```bash
+curl -s localhost:3000/v1/audio/speech -o hello.wav -d '{
+  "model": "magpie-tts-multilingual",
+  "input": "おはよう！今日もがんばろうね。",
+  "voice": "Magpie-Multilingual.JA-JP.Isabela",
+  "language": "ja-JP"
+}'
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `model` | — | `magpie-tts-multilingual`, `magpie-tts-zeroshot`, `chatterbox-multilingual-tts` (an `nvidia/` prefix is fine) |
+| `function_id` | — | Call any other NVCF TTS function directly instead of `model` |
+| `input` | — | Text to speak (required) |
+| `voice` | model default | e.g. `Magpie-Multilingual.EN-US.Aria.Calm`, `Chatterbox-Multilingual.ja-JP.Male` |
+| `language` | `en-US` | BCP-47 code |
+| `sample_rate` | `22050` | Hz |
+| `response_format` | `wav` | or `pcm` for raw 16-bit mono |
+| `audio_prompt` | — | Zero-shot models only: a 3–10 s reference WAV, base64 |
+| `audio_prompt_transcript` | — | What the reference clip says (optional, improves cloning) |
+| `quality` | model default | Zero-shot quality, e.g. `20`–`40` |
+
+Upstream errors come back with NVIDIA's own message, e.g. sending `audio_prompt` to a model that can't clone returns `400 … Loaded model is not a zero shot model`. `TTS_BASE_URL` (default `https://grpc.nvcf.nvidia.com`) points the route elsewhere, such as a self-hosted Riva/NIM speech container.
+
+> 🔒 **Privacy.** On NVIDIA's free API, the trial terms (§3.3) let NVIDIA collect what you send and what it generates "to improve NVIDIA products and services, including AI models." That includes any `audio_prompt`. Don't send a voice you wouldn't hand to NVIDIA.
 
 ---
 
