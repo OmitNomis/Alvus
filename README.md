@@ -72,7 +72,7 @@ If it speaks OpenAI-compatible API, it works with Alvus.
 | 🔄 **Round-robin**                 | Even distribution across all healthy keys                                     |
 | ⏳ **Proactive rate pacing**        | Set `RPM_LIMIT` and keys are rested *before* they hit the provider's ceiling  |
 | 🚫 **Silent retry on 429/502/503** | Failed key enters cooldown, request retries instantly with the next           |
-| ⏱️ **Retry-After support**         | Respects upstream `Retry-After` headers — no blind fixed waits                |
+| ⏱️ **Retry-After support**         | Respects upstream `Retry-After` (seconds or HTTP-date) — no blind fixed waits |
 | 🔑 **Quarantine on 401/403**       | Rejected keys are sidelined and re-probed later, backing off if they keep failing |
 | 📡 **Streaming passthrough**       | SSE and chunked responses piped with zero buffering and no timeout ceiling    |
 | ❤️ **Health endpoint**             | `GET /health` shows live key status, cooldown timers, and requests/minute     |
@@ -268,6 +268,7 @@ aider --openai-api-base http://localhost:3000/v1 --openai-api-key sk-dummy
    ├── ❄️ 429/502/503 → key enters cooldown (honouring Retry-After), retry with next key
    ├── 🔑 401/403 → key quarantined, probed again later, retry with next key
    ├── ⚠️ 5xx → retried with backoff (100ms doubling to a 2s cap)
+   ├── 🌐 network error (refused, reset, DNS, TLS, timeout) → key left alone, retried with backoff
    └── ⚠️ 4xx → terminal, passed through as-is
 ```
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -401,14 +402,167 @@ func TestCooldownFor(t *testing.T) {
 		}
 	})
 
-	t.Run("ignores an unparseable Retry-After", func(t *testing.T) {
-		// The HTTP-date form is legal but we do not parse it; fall back rather
-		// than treating it as zero.
-		resp := &http.Response{Header: http.Header{"Retry-After": []string{"Wed, 21 Oct 2026 07:28:00 GMT"}}}
-		if got := cooldownFor(resp, cfg); got != 45*time.Second {
-			t.Errorf("got %v, want the 45s fallback", got)
+	t.Run("honours an HTTP-date Retry-After with a margin", func(t *testing.T) {
+		// HTTP-dates only carry whole seconds, so the formatted time lands up
+		// to a second before the real one: expect 30s+2s, give or take.
+		at := time.Now().Add(30 * time.Second).UTC().Format(http.TimeFormat)
+		resp := &http.Response{Header: http.Header{"Retry-After": []string{at}}}
+		got := cooldownFor(resp, cfg)
+		if got < 30*time.Second || got > 33*time.Second {
+			t.Errorf("got %v, want about 32s (30s until the date + 2s margin)", got)
 		}
 	})
+
+	t.Run("an HTTP-date in the past means retry now", func(t *testing.T) {
+		at := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
+		resp := &http.Response{Header: http.Header{"Retry-After": []string{at}}}
+		if got := cooldownFor(resp, cfg); got != retryAfterMargin {
+			t.Errorf("got %v, want just the %v margin", got, retryAfterMargin)
+		}
+	})
+
+	t.Run("ignores an unparseable Retry-After", func(t *testing.T) {
+		// Fall back rather than treating junk as zero.
+		for _, ra := range []string{"soon", "-5", "1.5"} {
+			resp := &http.Response{Header: http.Header{"Retry-After": []string{ra}}}
+			if got := cooldownFor(resp, cfg); got != 45*time.Second {
+				t.Errorf("Retry-After %q: got %v, want the 45s fallback", ra, got)
+			}
+		}
+	})
+}
+
+// flakyTransport fails the first `fails` round trips with a transport error,
+// the way a dropped connection or DNS hiccup would, then passes through.
+type flakyTransport struct {
+	mu    sync.Mutex
+	fails int
+	calls int
+	base  http.RoundTripper
+}
+
+func (f *flakyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	f.calls++
+	fail := f.fails > 0
+	if fail {
+		f.fails--
+	}
+	f.mu.Unlock()
+	if fail {
+		return nil, errors.New("read: connection reset by peer")
+	}
+	return f.base.RoundTrip(r)
+}
+
+func rotateWithClient(t *testing.T, u *upstreamStub, pool *KeyPool, cfg Config, client *http.Client) (*rotateResult, *rotateError) {
+	t.Helper()
+	return withKeyRotation(context.Background(), cfg, pool, rotateOpts{Client: client}, "", func(key string) (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodPost, u.URL, strings.NewReader("{}"))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		return req, nil
+	})
+}
+
+// assertNoCooldowns fails if any key in the pool was put on cooldown.
+func assertNoCooldowns(t *testing.T, pool *KeyPool) {
+	t.Helper()
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	now := time.Now()
+	for i, until := range pool.cooldowns {
+		if until.After(now) {
+			t.Errorf("key [%d] is cooling until %v — a network error must not penalise the key", i, until)
+		}
+	}
+}
+
+func TestNetworkErrorsDoNotCoolKeys(t *testing.T) {
+	u := newUpstreamStub(http.StatusOK)
+	defer u.Close()
+	pool := NewKeyPool([]string{"key-a", "key-b", "key-c"}, 0)
+	ft := &flakyTransport{fails: 3, base: u.Client().Transport}
+
+	start := time.Now()
+	out, rerr := rotateWithClient(t, u, pool, testConfig(), &http.Client{Transport: ft})
+	if rerr != nil {
+		t.Fatalf("unexpected error: %v", rerr.msg)
+	}
+	defer out.release()
+	defer out.resp.Body.Close()
+
+	if out.resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 once the network recovers", out.resp.StatusCode)
+	}
+	if out.attempt != 4 {
+		t.Errorf("attempt = %d, want 4 (3 network errors, then success)", out.attempt)
+	}
+	assertNoCooldowns(t, pool)
+	// The three failures back off 100ms, 200ms, 400ms rather than firing
+	// back to back.
+	if elapsed := time.Since(start); elapsed < 600*time.Millisecond {
+		t.Errorf("took %v — network errors should back off between attempts", elapsed)
+	}
+}
+
+func TestNetworkOutageFailsWithoutBenchingTheKey(t *testing.T) {
+	// A single key and an upstream that never answers. The old behaviour put
+	// the key on a 60s cooldown and then sat waiting for it; now the request
+	// gives up after its backoff and the key is still ready for the next one.
+	u := newUpstreamStub()
+	defer u.Close()
+	pool := NewKeyPool([]string{"key-a"}, 0)
+	ft := &flakyTransport{fails: 100, base: u.Client().Transport}
+
+	start := time.Now()
+	_, rerr := rotateWithClient(t, u, pool, Config{MaxRetries: 3, CooldownSec: 60}, &http.Client{Transport: ft})
+	if rerr == nil {
+		t.Fatal("want an error when the upstream is unreachable")
+	}
+	if !strings.Contains(rerr.msg, "exhausted") {
+		t.Errorf("msg = %q, want an exhausted-retries error", rerr.msg)
+	}
+	if ft.calls != 3 {
+		t.Errorf("transport saw %d attempts, want 3", ft.calls)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("took %v — should not wait out a key cooldown on network errors", elapsed)
+	}
+	assertNoCooldowns(t, pool)
+	if _, _, ok := pool.Next(); !ok {
+		t.Error("the key should still be available for the next request")
+	}
+}
+
+func TestRateLimitStillCoolsTheKeyAfterANetworkError(t *testing.T) {
+	// Network errors are forgiven, but a real 429 that follows must still
+	// cool the key it hit.
+	u := newUpstreamStub(http.StatusTooManyRequests, http.StatusOK)
+	defer u.Close()
+	pool := NewKeyPool([]string{"key-a", "key-b"}, 0)
+	ft := &flakyTransport{fails: 1, base: u.Client().Transport}
+
+	out, rerr := rotateWithClient(t, u, pool, testConfig(), &http.Client{Transport: ft})
+	if rerr != nil {
+		t.Fatalf("unexpected error: %v", rerr.msg)
+	}
+	defer out.release()
+	defer out.resp.Body.Close()
+
+	pool.mu.Lock()
+	cooling := 0
+	for _, until := range pool.cooldowns {
+		if until.After(time.Now()) {
+			cooling++
+		}
+	}
+	pool.mu.Unlock()
+	if cooling != 1 {
+		t.Errorf("%d keys cooling, want exactly 1 (the one that got the 429)", cooling)
+	}
 }
 
 func TestBackoffFor(t *testing.T) {

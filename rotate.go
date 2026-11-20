@@ -130,12 +130,28 @@ func classify(status int) disposition {
 	return dispTerminal
 }
 
+// retryAfterMargin pads an upstream Retry-After so the key comes back just
+// after the moment the upstream named, not just before it.
+const retryAfterMargin = 2 * time.Second
+
 // cooldownFor honours an upstream Retry-After when present, falling back to the
 // configured fixed cooldown.
+//
+// Retry-After has two legal forms (RFC 9110 §10.2.3): a number of seconds, or
+// an HTTP-date. Both are honoured. A date that has already passed means "retry
+// now", so it gets only the margin. Anything else (empty, negative, garbage)
+// falls back to the configured cooldown rather than being read as zero.
 func cooldownFor(resp *http.Response, cfg Config) time.Duration {
-	if ra := resp.Header.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil {
-			return time.Duration(secs+2) * time.Second
+	if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+			return time.Duration(secs)*time.Second + retryAfterMargin
+		}
+		if at, err := http.ParseTime(ra); err == nil {
+			wait := time.Until(at)
+			if wait < 0 {
+				wait = 0
+			}
+			return wait + retryAfterMargin
 		}
 	}
 	return time.Duration(cfg.CooldownSec) * time.Second
@@ -173,6 +189,10 @@ func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotate
 	if opts.Client != nil {
 		client = opts.Client
 	}
+	// transportFails counts network errors in a row. It drives their backoff,
+	// so a run of failures across several keys slows down instead of sweeping
+	// the whole pool as fast as connections can fail. Any HTTP answer resets it.
+	transportFails := 0
 	for attempt := 0; attempt < cfg.MaxRetries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, &rotateError{http.StatusServiceUnavailable, "client went away"}
@@ -224,10 +244,22 @@ func withKeyRotation(ctx context.Context, cfg Config, pool *KeyPool, opts rotate
 			if ctx.Err() != nil {
 				return nil, &rotateError{http.StatusServiceUnavailable, "client went away"}
 			}
-			log.Printf("⚠️ %sKey [%d] network error: %v", tag, idx, err)
-			pool.Cooldown(idx, time.Duration(cfg.CooldownSec)*time.Second)
+			// A transport failure (refused, reset, DNS, TLS, a timeout, EOF
+			// before headers) says nothing about the key: the upstream never
+			// got far enough to judge it. Cooling the key here would let one
+			// network blip bench every healthy key in the pool, and leave it
+			// degraded long after the network came back. So the key is left
+			// alone; the request backs off and the next attempt rotates as
+			// usual.
+			wait := backoffFor(transportFails)
+			transportFails++
+			log.Printf("⚠️ %sKey [%d] network error, key not penalised (retrying in %s): %v", tag, idx, wait, err)
+			if !sleepCtx(ctx, wait) {
+				return nil, &rotateError{http.StatusServiceUnavailable, "client went away"}
+			}
 			continue
 		}
+		transportFails = 0
 
 		disp := classify(resp.StatusCode)
 		if disp != dispDisable {
